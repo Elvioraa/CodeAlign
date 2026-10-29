@@ -77,7 +77,11 @@ def getIntermediateheterFusionDataset(cls):
             mapping_dict = params['heter']['mapping_dict']
             cav_preference = params['heter'].get("cav_preference", None)
 
-            if self.modality_assignment is None:
+            if 'codealign_protocol' in params:
+                from opencood.utils.codealign_data import ProtocolAdaptor
+                self.adaptor = ProtocolAdaptor(params, train)
+                self.modality_assignment = self.adaptor.modality_assignment
+            elif self.modality_assignment is None:
                 self.adaptor = Adaptor(self.ego_modality,
                                     self.modality_name_list,
                                     self.modality_assignment,

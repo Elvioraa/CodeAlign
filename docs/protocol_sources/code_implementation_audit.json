@@ -1,0 +1,111 @@
+{
+  "reference_commit": "ef19dd01fbbbe35b82956b37c7b1a5b4bbf1bfd8",
+  "records": [
+    {
+      "file": "opencood/utils/eval_utils.py",
+      "symbol": "voc_ap",
+      "codealign_ast_sha256": "02d2bb76f9ea153574809f74811f0174a27f285c8c03a8babc3cb4e576b0ac40",
+      "doma_ast_sha256": "02d2bb76f9ea153574809f74811f0174a27f285c8c03a8babc3cb4e576b0ac40",
+      "equal": true
+    },
+    {
+      "file": "opencood/utils/eval_utils.py",
+      "symbol": "caluclate_tp_fp",
+      "codealign_ast_sha256": "8b4be416d8c7d204ae34a840d4dce9ddf2f26a62ada0a5a0cd893d20ef456d57",
+      "doma_ast_sha256": "8b4be416d8c7d204ae34a840d4dce9ddf2f26a62ada0a5a0cd893d20ef456d57",
+      "equal": true
+    },
+    {
+      "file": "opencood/utils/eval_utils.py",
+      "symbol": "calculate_ap",
+      "codealign_ast_sha256": "a403c5755721ac52d5e9a496de9902cb8166394f36350e36c5adfb001f282961",
+      "doma_ast_sha256": "a403c5755721ac52d5e9a496de9902cb8166394f36350e36c5adfb001f282961",
+      "equal": true
+    },
+    {
+      "file": "opencood/data_utils/post_processor/voxel_postprocessor.py",
+      "symbol": "VoxelPostprocessor.post_process",
+      "codealign_ast_sha256": "f8748091828b0d5312d0949b299e9166174c5063e88a51ae9580797e27199cc1",
+      "doma_ast_sha256": "f8748091828b0d5312d0949b299e9166174c5063e88a51ae9580797e27199cc1",
+      "equal": true
+    },
+    {
+      "file": "opencood/models/heter_encoders.py",
+      "symbol": "PointPillar",
+      "codealign_ast_sha256": "2b4f7d79dd1e6da5205ad5776c64240f6750acd9a9f00a922c6878d7a0661e8c",
+      "doma_ast_sha256": "2b4f7d79dd1e6da5205ad5776c64240f6750acd9a9f00a922c6878d7a0661e8c",
+      "equal": true
+    },
+    {
+      "file": "opencood/models/heter_encoders.py",
+      "symbol": "SECOND",
+      "codealign_ast_sha256": "dda6d2dae5cd9705b6d627afccbf0e65f4f42928f263d723306de25a130a5571",
+      "doma_ast_sha256": "dda6d2dae5cd9705b6d627afccbf0e65f4f42928f263d723306de25a130a5571",
+      "equal": true
+    },
+    {
+      "file": "opencood/models/heter_encoders.py",
+      "symbol": "LiftSplatShoot.forward",
+      "codealign_ast_sha256": "b447ce79cfaf1440219860a13bc66f4f531e263cab3db3ebf074b610f1a1122d",
+      "doma_ast_sha256": "b447ce79cfaf1440219860a13bc66f4f531e263cab3db3ebf074b610f1a1122d",
+      "equal": true
+    },
+    {
+      "file": "opencood/models/heter_encoders.py",
+      "symbol": "LiftSplatShoot.get_cam_feats",
+      "codealign_ast_sha256": "3b183460d62cd8f1195a544c7da2123d1a6d6efcb63789024a5495a6050909b9",
+      "doma_ast_sha256": "3b183460d62cd8f1195a544c7da2123d1a6d6efcb63789024a5495a6050909b9",
+      "equal": true
+    },
+    {
+      "file": "opencood/models/heter_encoders.py",
+      "symbol": "LiftSplatShoot.voxel_pooling",
+      "codealign_ast_sha256": "3c5abfe385dcb638da6e7967ea11216c7ec725d5de78119e8cd3e0d0f8a4d025",
+      "doma_ast_sha256": "3c5abfe385dcb638da6e7967ea11216c7ec725d5de78119e8cd3e0d0f8a4d025",
+      "equal": true
+    },
+    {
+      "file": "opencood/models/sub_modules/lss_submodule.py",
+      "symbol": "CamEncode",
+      "codealign_ast_sha256": "321aecce2e9b5ce522f4c6ba6f9bbced375463fbe9c764c50845c85ef9bd329d",
+      "doma_ast_sha256": "321aecce2e9b5ce522f4c6ba6f9bbced375463fbe9c764c50845c85ef9bd329d",
+      "equal": true
+    },
+    {
+      "file": "opencood/models/sub_modules/lss_submodule.py",
+      "symbol": "CamEncode_Resnet101",
+      "codealign_ast_sha256": "f2a448d195bbe5bf2a6db288e78145e0fcf9377ceb2f5a80e42bc1f5d35861ee",
+      "doma_ast_sha256": "f2a448d195bbe5bf2a6db288e78145e0fcf9377ceb2f5a80e42bc1f5d35861ee",
+      "equal": true
+    },
+    {
+      "file": "opencood/utils/pcd_utils.py",
+      "symbol": "pcd_to_np",
+      "codealign_ast_sha256": "db579a920bd46f74da2183a82b210403390350eeb26d2829703fa9fd2e865141",
+      "doma_ast_sha256": "db579a920bd46f74da2183a82b210403390350eeb26d2829703fa9fd2e865141",
+      "equal": true
+    },
+    {
+      "file": "opencood/data_utils/post_processor/base_postprocessor.py",
+      "symbol": "BasePostprocessor.generate_object_center",
+      "codealign_ast_sha256": "6f9fdd80286583aedd1159416a0bdb331c7e43e338d803a0746655195e2bfd63",
+      "doma_ast_sha256": "6f9fdd80286583aedd1159416a0bdb331c7e43e338d803a0746655195e2bfd63",
+      "equal": true
+    },
+    {
+      "file": "opencood/data_utils/post_processor/base_postprocessor.py",
+      "symbol": "BasePostprocessor.generate_object_center_v2xset_camera",
+      "codealign_ast_sha256": "df097c275ffc2c188461793d67d6244a2b2a3ea9b240ec81fd9dd1dfdbe83ecd",
+      "doma_ast_sha256": "df097c275ffc2c188461793d67d6244a2b2a3ea9b240ec81fd9dd1dfdbe83ecd",
+      "equal": true
+    },
+    {
+      "file": "opencood/data_utils/post_processor/base_postprocessor.py",
+      "symbol": "BasePostprocessor.generate_gt_bbx",
+      "codealign_ast_sha256": "66b400e6012af78d4bf5dd9301c71d7ab07ccc6ceecd71b57cb7a9c73679e563",
+      "doma_ast_sha256": "b4a9d97576ffa4a4067744f00ec59b1a5ae6cd7b2a71ecfd8ba5059be657132c",
+      "equal": false
+    }
+  ],
+  "gt_note": "generate_gt_bbx differs only for rank>2 transformation matrices. Our inherited collate_batch_test supplies identity 4x4, so the common branch executes."
+}

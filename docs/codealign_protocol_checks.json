@@ -1,0 +1,33 @@
+{
+  "opv2v": {
+    "status": "PASS_STATIC",
+    "stage_configs": 12,
+    "training_assignment_scenes": 68,
+    "evaluation_assignment_scenes": 16,
+    "isolation_scene_counts": {
+      "m1": 17,
+      "m2": 17,
+      "m3": 17,
+      "m4": 17
+    },
+    "real_data": "SERVER_REQUIRED",
+    "full_model": "SERVER_REQUIRED",
+    "final_runtime_protocol": "SERVER_VALIDATION_REQUIRED"
+  },
+  "v2xset": {
+    "status": "PASS_STATIC",
+    "stage_configs": 12,
+    "training_assignment_scenes": 58,
+    "evaluation_assignment_scenes": 19,
+    "isolation_scene_counts": {
+      "m1": 15,
+      "m2": 15,
+      "m3": 14,
+      "m4": 14
+    },
+    "real_data": "SERVER_REQUIRED",
+    "full_model": "SERVER_REQUIRED",
+    "final_runtime_protocol": "SERVER_VALIDATION_REQUIRED"
+  },
+  "python_ast_files": 8
+}

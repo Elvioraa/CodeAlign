@@ -1,0 +1,161 @@
+schema_version: 2
+dataset: opv2v
+codealign_base: 75d5ecd359d36a64a3af3d64c4fe32e72ed344bc
+reference_doma_commit: ef19dd01fbbbe35b82956b37c7b1a5b4bbf1bfd8
+reference_server: /home/fkk/my_data/disk2/code/DOMA
+seed: 303
+reference_configs:
+  m1:
+    origin: F:\zzuStudy\exp_gpt\DOMA\opencood\hypes_yaml\opv2v\MoreModality\DOMA\V2_R2_TABLE4_EXT\history_snapshot.json#opencood/logs/DOMA_V2_R2_2GPU_LR1P414_SEED303/stage1/m1_base/config.yaml
+    copy: docs/protocol_sources/opv2v/m1.yaml
+    sha256: 1eb7d17b7e1b56640f29c22dbbba4b3a9b995983de727d8a6c319aa79305711d
+    parsed_sha256: 6d057a656d68b79b89772bad3ef355cffd49689836499a21817115221118c82b
+    status: saved_run_snapshot
+  m2:
+    origin: F:\zzuStudy\exp_gpt\DOMA\opencood\hypes_yaml\opv2v\MoreModality\DOMA\V2_R2_TABLE4_EXT\history_snapshot.json#opencood/logs/DOMA_V2_R2_2GPU_LR1P414_SEED303/stage2/m2_alignto_m1_lr0p0012/config.yaml
+    copy: docs/protocol_sources/opv2v/m2.yaml
+    sha256: d19857f509e4db2f6a47fcac3146a3da17a1b3d0573f378ad515cb86a9b39627
+    parsed_sha256: 7af882fe10a7e6a685ece709b70a3df42d1a26e58b44ebe030dcf1d4c676f1a9
+    status: saved_run_snapshot
+  m3:
+    origin: F:\zzuStudy\exp_gpt\DOMA\opencood\hypes_yaml\opv2v\MoreModality\DOMA\V2_R2_TABLE4_EXT\history_snapshot.json#opencood/logs/DOMA_V2_R2_2GPU_LR1P414_SEED303/stage2/m3_alignto_m1_lr0p0030/config.yaml
+    copy: docs/protocol_sources/opv2v/m3.yaml
+    sha256: 2efea274e87c18000bcbf190693483ced481cd336428466858ae3794d705884a
+    parsed_sha256: 975342291f078655bccf5594948a9619f314c23741ef9c90c8cfa3bbfba19ffc
+    status: saved_run_snapshot
+  m4:
+    origin: F:\zzuStudy\exp_gpt\DOMA\opencood\hypes_yaml\opv2v\MoreModality\DOMA\V2_R2_TABLE4_EXT\history_snapshot.json#opencood/logs/DOMA_V2_R2_2GPU_LR1P414_SEED303/stage2/m4_alignto_m1_lr0p0017/config.yaml
+    copy: docs/protocol_sources/opv2v/m4.yaml
+    sha256: 5a590a9047edc6dbf1ba9770dbcc9e5726ea15844b2adf3edefab232c4c49d93
+    parsed_sha256: e4fc5e181c59879718f2db1ab4743aeb7fb80d3108863712005e1642160112e9
+    status: saved_run_snapshot
+  final:
+    origin: F:\zzuStudy\exp_gpt\DOMA\opencood\hypes_yaml\opv2v\MoreModality\DOMA\V2_R2_TABLE4_EXT\history_snapshot.json#opencood/logs/DOMA_V2_R2_2GPU_LR1P414_SEED303/final_infer/config.yaml
+    copy: docs/protocol_sources/opv2v/final.yaml
+    sha256: 76e1b9d266db7d7ca7e97b96126914ce4e299c3c33b2a8291bd796dc58f86db8
+    parsed_sha256: b25076abdceafdd0be0bfc3de54b042e89bcef689cc22a87142e664bfa4dc31a
+    status: saved_run_snapshot
+assignments:
+  training:
+    path: opencood/modality_assign/opv2v_4modality.json
+    sha256: e8e7be993f6188a33ad790e25957f76b808c0dc36550a09acdca0b183e153c44
+    ordered_sha256: 01cf209e5b2fed336642b54a6b8460db1aa15111c827c4d20f5ec39d2567e695
+    scenarios: 68
+    equals_local_DOMA: true
+  evaluation:
+    path: opencood/modality_assign/opv2v_4modality_in_order.json
+    sha256: b0d83733eae09c6e69a72d867e6fd8131425f9cd9efb0beff96bbd8ea680ca0e
+    ordered_sha256: d2aceed87e201fa7b5c60ec84899db80aad4643436ba3f6c44136d88c89a9d56
+    scenarios: 16
+    equals_local_DOMA: true
+data_identity: OPV2V with OPV2V_Hetero 32-beam and depth extensions (OPV2V-H protocol)
+sensor_policy:
+  m1: original_PCD_PointPillar
+  m2: LSS_EfficientNet
+  m3: OPV2V_Hetero_32_PCD_SECOND
+  m4: LSS_Resnet101
+sensor_policy_source: user clarification 2026-10-27; DOMA local configs
+splits:
+  root_dir: dataset/OPV2V/train
+  validate_dir: dataset/OPV2V/validate
+  test_dir: dataset/OPV2V/test
+training:
+  comm_range: 70
+  max_cav: 5
+  modality_ranges:
+    m1:
+    - -102.4
+    - -51.2
+    - -3
+    - 102.4
+    - 51.2
+    - 1
+    m2:
+    - -51.2
+    - -51.2
+    - -3
+    - 51.2
+    - 51.2
+    - 1
+    m3:
+    - -96
+    - -48
+    - -3
+    - 96
+    - 48
+    - 1
+    m4:
+    - -51.2
+    - -51.2
+    - -3
+    - 51.2
+    - 51.2
+    - 1
+  isolation: insertion_order_scene_index_mod_4; disjoint source scenes in every stage
+  budget_policy: CodeAlign native templates; not DOMA/STAMP training budgets
+  epochs:
+    single: 50
+    code_space: 50
+    fcf: 30
+evaluation:
+  range:
+  - -204.8
+  - -102.4
+  - -3
+  - 204.8
+  - 102.4
+  - 1
+  comm_range: 180
+  max_cav: 5
+  use_cav:
+  - 1
+  - 2
+  - 3
+  - 4
+  ego: m1
+  gt: all_in_range_agents_before_prefix_cutoff
+  gt_label_source: lidar_for_every_modality_via_visualize_true
+  iou:
+  - 0.3
+  - 0.5
+  - 0.7
+  postprocess:
+    core_method: VoxelPostprocessor
+    gt_range: &id001
+    - -102.4
+    - -102.4
+    - -3
+    - 102.4
+    - 102.4
+    - 1
+    anchor_args:
+      cav_lidar_range: *id001
+      l: 3.9
+      w: 1.6
+      h: 1.56
+      r: &id002
+      - 0
+      - 90
+      feature_stride: 2
+      num: 2
+    target_args:
+      pos_threshold: 0.6
+      neg_threshold: 0.45
+      score_threshold: 0.2
+    order: hwl
+    max_num: 100
+    nms_thresh: 0.15
+    dir_args:
+      dir_offset: 0.7853
+      num_bins: 2
+      anchor_yaw: *id002
+  range_source: DOMA inference_doma_heter_in_order.py default/recursive override
+  runtime_confirmation: SERVER_VALIDATION_REQUIRED
+  note: OPV2V saved logs confirm dataset/AP, not historical CLI flags. V2XSet is a
+    local reference, not a server run snapshot.
+server_validation_required:
+- actual data identity and split/sample counts
+- actual DOMA final range/GT/NMS/CLI provenance
+- CUDA/spconv DataLoader and full forward/backward
+- training, full-state resume and final AP
+camera_excluded_scenes: []

@@ -1,0 +1,80 @@
+dataset: opv2v
+stages:
+  single/m1:
+    config: single/m1/config.yaml
+    parents: []
+    checkpoint: single/m1/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/pyramid.yaml
+  single/m2:
+    config: single/m2/config.yaml
+    parents: []
+    checkpoint: single/m2/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/pyramid.yaml
+  single/m3:
+    config: single/m3/config.yaml
+    parents: []
+    checkpoint: single/m3/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/pyramid.yaml
+  single/m4:
+    config: single/m4/config.yaml
+    parents: []
+    checkpoint: single/m4/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/pyramid.yaml
+  code_space/m1:
+    config: code_space/m1/config.yaml
+    parents:
+    - single/m1
+    checkpoint: code_space/m1/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/codebook_pyramid_fixenc_aligner.yaml
+  code_space/m2:
+    config: code_space/m2/config.yaml
+    parents:
+    - single/m2
+    checkpoint: code_space/m2/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/codebook_pyramid_fixenc_aligner.yaml
+  code_space/m3:
+    config: code_space/m3/config.yaml
+    parents:
+    - single/m3
+    checkpoint: code_space/m3/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/codebook_pyramid_fixenc_aligner.yaml
+  code_space/m4:
+    config: code_space/m4/config.yaml
+    parents:
+    - single/m4
+    checkpoint: code_space/m4/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/codebook_pyramid_fixenc_aligner.yaml
+  fcf/m2_to_m1:
+    config: fcf/m2_to_m1/config.yaml
+    parents:
+    - code_space/m2
+    - code_space/m1
+    checkpoint: fcf/m2_to_m1/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/codebook_pyramid_c2c.yaml
+  fcf/m3_to_m1:
+    config: fcf/m3_to_m1/config.yaml
+    parents:
+    - code_space/m3
+    - code_space/m1
+    checkpoint: fcf/m3_to_m1/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/codebook_pyramid_c2c.yaml
+  fcf/m4_to_m1:
+    config: fcf/m4_to_m1/config.yaml
+    parents:
+    - code_space/m4
+    - code_space/m1
+    checkpoint: fcf/m4_to_m1/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/codebook_pyramid_c2c.yaml
+  final_infer:
+    config: final_infer/config.yaml
+    parents:
+    - code_space/m1
+    - code_space/m2
+    - code_space/m3
+    - code_space/m4
+    - fcf/m2_to_m1
+    - fcf/m3_to_m1
+    - fcf/m4_to_m1
+    checkpoint: final_infer/best.pth
+    budget_source: opencood/hypes_yaml/opv2v/Heter_group/codebook/pyramid.yaml
+checkpoint_policy: unique best validation loss; complete state latest.pth for resume

@@ -165,3 +165,21 @@ opencood/tools/inference_w_noise_heter.py
 docs/
 scripts/
 MODEL_ZOO.md
+
+# Reviewed CodeAlign/DOMA protocol deliverables only.
+!docs/
+docs/*
+!docs/DOMA_OPV2V_V2XSET_ADAPTATION.md
+!docs/DOMA_OPV2V_V2XSET_PROTOCOL_CHECK.md
+!docs/codealign_protocol_checks.json
+!docs/protocol_sources/
+!docs/protocol_sources/**
+!scripts/
+scripts/*
+!scripts/codealign_doma_commands.sh
+*.pth
+*.pt
+*.ckpt
+*.pcd
+*.hdf5
+*.bin

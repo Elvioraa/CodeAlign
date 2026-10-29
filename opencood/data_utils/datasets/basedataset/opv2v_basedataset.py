@@ -83,7 +83,7 @@ class OPV2VBaseDataset(Dataset):
         #                                 else read_json(params['heter']['assignment_path'])
         self.modality_assignment = params['modality_assignment'] if 'modality_assignment' in params else read_json(params['heter']['assignment_path'])
         if self.modality_assignment is not None:
-            scenario_folders = [x for x in scenario_folders if x.split("/")[-1] in self.modality_assignment.keys()]
+            scenario_folders = [x for x in scenario_folders if os.path.basename(x) in self.modality_assignment.keys()]
         
         self.scenario_folders = scenario_folders
         self.reinitialize()
@@ -105,13 +105,13 @@ class OPV2VBaseDataset(Dataset):
                 #             if os.path.isdir(
                 #         os.path.join(scenario_folder, x))]
                 # cav_list = sorted(cav_list)
-                cav_list = list(self.modality_assignment[scenario_folder.split("/")[-1]].keys())
+                cav_list = list(self.modality_assignment[os.path.basename(scenario_folder)].keys())
                 random.shuffle(cav_list)
             else:
                 # cav_list = sorted([x for x in os.listdir(scenario_folder)
                 #                    if os.path.isdir(
                 #         os.path.join(scenario_folder, x))])
-                cav_list = list(self.modality_assignment[scenario_folder.split("/")[-1]].keys())
+                cav_list = list(self.modality_assignment[os.path.basename(scenario_folder)].keys())
             assert len(cav_list) > 0
 
             """
@@ -126,7 +126,7 @@ class OPV2VBaseDataset(Dataset):
             make the first cav to be ego modality
             """
             if getattr(self, "heterogeneous", False):
-                scenario_name = scenario_folder.split("/")[-1]
+                scenario_name = os.path.basename(scenario_folder)
                 cav_list = self.adaptor.reorder_cav_list(cav_list, scenario_name)
 
 
@@ -182,7 +182,7 @@ class OPV2VBaseDataset(Dataset):
                         depth_files
                     
                     if getattr(self, "heterogeneous", False):
-                        scenario_name = scenario_folder.split("/")[-1]
+                        scenario_name = os.path.basename(scenario_folder)
                         cav_modality = self.adaptor.reassign_cav_modality(self.modality_assignment[scenario_name][cav_id] , j, scenario_name)
 
                         self.scenario_database[i][cav_id][timestamp]['modality_name'] = cav_modality
@@ -281,8 +281,12 @@ class OPV2VBaseDataset(Dataset):
 
             # load lidar file
             if self.load_lidar_file or self.visualize:
-                data[cav_id]['lidar_np'] = \
-                    pcd_utils.pcd_to_np(cav_content[timestamp_key]['lidar'])
+                if 'codealign_protocol' in self.params:
+                    from opencood.utils.codealign_data import read_protocol_pcd
+                    data[cav_id]['lidar_np'] = read_protocol_pcd(cav_content[timestamp_key]['lidar'])
+                else:
+                    data[cav_id]['lidar_np'] = \
+                        pcd_utils.pcd_to_np(cav_content[timestamp_key]['lidar'])
 
             if getattr(self, "heterogeneous", False):
                 data[cav_id]['modality_name'] = cav_content[timestamp_key]['modality_name']
