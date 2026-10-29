@@ -59,14 +59,35 @@ def scene_owner(scene, assignment):
     return MODALITIES[list(assignment).index(scene) % len(MODALITIES)]
 
 
-def assignments(dataset):
+def _resolved_assignments(dataset, experiment_lock=None):
+    """Source pins ordered content; an experiment additionally pins raw bytes.
+
+    Return an independent lock with observed byte hashes, never mutate the
+    source lock or assignment files. Read each JSON once so both hashes refer
+    to the same bytes.
+    """
     lock = read_yaml(config_root(dataset) / "protocol_lock.yaml")
+    require(lock["dataset"] == dataset, "source lock dataset mismatch")
+    if experiment_lock is not None:
+        normalized = copy.deepcopy(experiment_lock)
+        require(set(normalized.get("assignments", {})) == set(lock["assignments"]),
+                "experiment assignment records differ from source")
+        for name, record in lock["assignments"].items():
+            require("sha256" in normalized["assignments"][name], "missing experiment byte hash")
+            normalized["assignments"][name]["sha256"] = record["sha256"]
+        require(normalized == lock, "experiment protocol differs from source beyond assignment byte hashes")
+    observed = copy.deepcopy(lock)
     result = {}
     for name, record in lock["assignments"].items():
         path = ROOT / record["path"]
-        value = json.loads(path.read_text(encoding="utf-8"))
-        require(sha256(path) == record["sha256"], f"assignment bytes drift: {path}")
+        raw = path.read_bytes()
+        value = json.loads(raw.decode("utf-8"))
         require(ordered_hash(value) == record["ordered_sha256"], "assignment order drift")
+        actual_sha = hashlib.sha256(raw).hexdigest()
+        if experiment_lock is not None:
+            require(actual_sha == experiment_lock["assignments"][name]["sha256"],
+                    f"experiment assignment bytes drift: {path}")
+        observed["assignments"][name]["sha256"] = actual_sha
         for scene, members in value.items():
             require(members and all(m in MODALITIES for m in members.values()),
                     f"invalid modality in {scene}")
@@ -78,7 +99,12 @@ def assignments(dataset):
                         f"invalid ordered prefix: {scene}")
         result[name] = value
     require(set(result["evaluation"]) <= set(result["training"]), "unknown evaluation scene")
-    return result
+    return result, observed
+
+
+def assignments(dataset, experiment_lock=None):
+    """Validate source semantics/order, plus strict bytes when a run lock is supplied."""
+    return _resolved_assignments(dataset, experiment_lock)[0]
 
 
 def load_config(path):
@@ -146,8 +172,14 @@ def stage_parents(stage):
 def prepare(experiment, dataset):
     experiment = Path(experiment).resolve()
     source = config_root(dataset)
+    protected = (ROOT / "opencood/hypes_yaml").resolve()
+    require(experiment != protected and protected not in experiment.parents,
+            "experiment directory must be outside source hypes_yaml")
+    lock_path = experiment / "protocol_lock.yaml"
+    existing_lock = read_yaml(lock_path) if lock_path.exists() else None
+    _, observed_lock = _resolved_assignments(dataset, existing_lock)
     manifest = read_yaml(source / "manifest.yaml")
-    for filename in ("protocol_lock.yaml", "manifest.yaml"):
+    for filename in ("manifest.yaml",):
         dst = experiment / filename
         require(not dst.exists() or dst.read_bytes() == (source / filename).read_bytes(),
                 f"existing experiment identity differs: {dst}")
@@ -162,7 +194,10 @@ def prepare(experiment, dataset):
         dst.parent.mkdir(parents=True, exist_ok=True)
         if not dst.exists():
             dst.write_bytes((source / stage / "config.yaml").read_bytes())
-    for filename in ("protocol_lock.yaml", "manifest.yaml"):
+    if not lock_path.exists():
+        lock_path.write_text(yaml.safe_dump(observed_lock, allow_unicode=True, sort_keys=False),
+                             encoding="utf-8")
+    for filename in ("manifest.yaml",):
         dst = experiment / filename
         require(not dst.exists() or dst.read_bytes() == (source / filename).read_bytes(),
                 f"existing experiment identity differs: {dst}")

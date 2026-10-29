@@ -55,9 +55,7 @@ def runtime_config(experiment, stage):
     require(all(config[key] == value for key, value in lock["splits"].items()),
             "dataset split paths/experiment lock mismatch")
     # Assignment bytes/order are checked on EVERY stage, not just preparation.
-    current = assignments(dataset)
-    for name, record in lock["assignments"].items():
-        require(sha256(ROOT / record["path"]) == record["sha256"], "experiment assignment drift")
+    assignments(dataset, experiment_lock=lock)
     require(config["model"]["args"]["lidar_range"] == config["cav_lidar_range"], "model/canvas mismatch")
     if stage == "final_infer":
         require(config["cav_lidar_range"] == lock["evaluation"]["range"], "final evaluation range/lock mismatch")
@@ -334,7 +332,6 @@ def main():
     os.chdir(ROOT)
     if args.action == "prepare":
         require(args.dataset, "prepare requires --dataset")
-        assignments(args.dataset)
         prepare(args.experiment_root, args.dataset)
         print("Prepared reviewed YAML copies; no training or inference started.")
     elif args.action == "train":
