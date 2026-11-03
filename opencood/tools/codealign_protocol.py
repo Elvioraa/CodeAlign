@@ -4,9 +4,21 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import yaml
+
+
+class ConfigLoader(yaml.SafeLoader):
+    pass
+
+
+ConfigLoader.add_implicit_resolver(
+    "tag:yaml.org,2002:float",
+    re.compile(r"^[-+]?(?:[0-9][0-9_]*(?:\.[0-9_]*)?|\.[0-9_]+)[eE][-+]?[0-9]+$"),
+    list("-+0123456789."),
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 MODALITIES = ("m1", "m2", "m3", "m4")
@@ -29,6 +41,24 @@ def digest(value):
                                      sort_keys=True).encode()).hexdigest()
 
 
+def protocol_config(config):
+    """Comparable model/data contract, excluding explicitly tunable settings."""
+    value = copy.deepcopy(config)
+    value.pop("optimizer", None)
+    value.pop("lr_scheduler", None)
+    for key in ("batch_size", "epoches"):
+        value["train_params"].pop(key, None)
+    value.get("codealign_protocol", {}).pop("flexible_hparams", None)
+    return value
+
+
+def protocol_lock_digest(lock):
+    value = copy.deepcopy(lock)
+    for record in value["assignments"].values():
+        record.pop("sha256", None)
+    return digest(value)
+
+
 def ordered_hash(value):
     # Assignment member order is meaningful: never sort its keys.
     return hashlib.sha256(json.dumps(value, ensure_ascii=False,
@@ -37,7 +67,7 @@ def ordered_hash(value):
 
 def read_yaml(path):
     with Path(path).open(encoding="utf-8") as stream:
-        return yaml.safe_load(stream)
+        return yaml.load(stream, Loader=ConfigLoader)
 
 
 def write_json(path, value):
@@ -186,9 +216,14 @@ def prepare(experiment, dataset):
     # Check everything first; never overwrite a reviewed config.
     for stage in STAGES:
         src = source / stage / "config.yaml"
-        load_config(src)
+        source_config = load_config(src)
         dst = experiment / stage / "config.yaml"
-        require(not dst.exists() or dst.read_bytes() == src.read_bytes(), f"config differs: {dst}")
+        if dst.exists():
+            try:
+                reviewed = load_config(dst)
+            except (KeyError, TypeError) as exc:
+                raise ValueError(f"config differs: {dst}") from exc
+            require(protocol_config(reviewed) == protocol_config(source_config), f"config differs: {dst}")
     for stage in STAGES:
         dst = experiment / stage / "config.yaml"
         dst.parent.mkdir(parents=True, exist_ok=True)

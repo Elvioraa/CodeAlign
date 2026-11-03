@@ -13,11 +13,14 @@ import json
 import math
 import os
 import sys
+import shutil
+import uuid
+import traceback
 from pathlib import Path
 
 from opencood.tools.codealign_protocol import (
     ROOT, MODALITIES, STAGES, assignments, config_root, digest, evaluation_config,
-    load_config, prepare, read_yaml, require, sha256, write_json,
+    load_config, prepare, read_yaml, require, sha256, write_json, protocol_lock_digest,
     validate_prefix,
 )
 
@@ -41,7 +44,11 @@ def stage_log(path):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with Path(path).open("a", encoding="utf-8", buffering=1) as stream:
         with contextlib.redirect_stdout(Tee(sys.stdout, stream)), contextlib.redirect_stderr(Tee(sys.stderr, stream)):
-            yield
+            try:
+                yield
+            except BaseException:
+                traceback.print_exc(file=stream)
+                raise
 
 
 def runtime_config(experiment, stage):
@@ -62,7 +69,7 @@ def runtime_config(experiment, stage):
     require(config["comm_range"] == lock["evaluation" if stage == "final_infer" else "training"]["comm_range"],
             "communication range/lock mismatch")
     from opencood.hypes_yaml.yaml_utils import load_general_params
-    return config, load_general_params(copy.deepcopy(config)), sha256(lock_path)
+    return config, load_general_params(copy.deepcopy(config)), protocol_lock_digest(lock)
 
 
 def device_for_run():
@@ -100,7 +107,7 @@ def train_stage(experiment, stage, resume):
     from opencood.tools import train_utils
     from opencood.tools.codealign_state import (
         atomic_torch_save, initialize_model, parent_checkpoints, provenance,
-        restore_training, rng_state, seed_everything,
+        restore_training, rng_state, seed_everything, create_scheduler,
     )
     require(stage != "final_infer", "use assemble for final stage")
     directory = Path(experiment) / stage
@@ -124,7 +131,7 @@ def train_stage(experiment, stage, resume):
     method = config["optimizer"]
     optimizer = getattr(torch.optim, method["core_method"])(
         [p for p in model.parameters() if p.requires_grad], lr=method["lr"], **method.get("args", {}))
-    scheduler = train_utils.setup_lr_schedular(config, optimizer)
+    scheduler = create_scheduler(config, optimizer)
     criterion = train_utils.create_loss(config).to(device)
     generators = {name: torch.Generator().manual_seed(config["seed"] + offset)
                   for name, offset in (("train", 0), ("validate", 1))}
@@ -143,14 +150,31 @@ def train_stage(experiment, stage, resume):
     require(len(train_loader) > 0, "training shard is smaller than configured batch size")
     start, best, best_epoch = 0, float("inf"), 0
     if resume:
-        state = restore_training(directory / "latest.pth", model, optimizer, scheduler, generators, identity)
+        state = restore_training(directory / "latest.pth", model, optimizer, scheduler, generators, identity,
+                                 config=config, experiment=experiment)
         require(state["data_sha256"] == data_hash, "data population changed on resume")
         start, best, best_epoch = state["epoch"], state["best_val"], state["best_epoch"]
     audit_path = directory / "input_audit.json"
-    require(not audit_path.exists() or json.loads(audit_path.read_text(encoding="utf-8")) == audit,
-            "input audit changed; preserve the original stage")
+    if audit_path.exists():
+        previous_audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        if resume and previous_audit.get("provenance") == state["provenance"]:
+            previous_audit["provenance"] = identity
+        require(previous_audit == audit, "input audit changed; preserve the original stage")
     if not audit_path.exists():
         write_json(audit_path, audit)
+    # Immutable per-invocation snapshots preserve the previous valid weights.
+    history = directory / "run_history" / uuid.uuid4().hex
+    history.mkdir(parents=True, exist_ok=False)
+    if resume:
+        for filename in ("latest.pth", "best.pth"):
+            if (directory / filename).is_file():
+                shutil.copy2(directory / filename, history / filename)
+    write_json(history / "run.json", {"resume": resume, "config": config,
+               "previous_config": state.get("config") if resume else None,
+               "resumed_epoch": start, "provenance": identity,
+               "effective_learning_rates": [float(group["lr"]) for group in optimizer.param_groups],
+               "optimizer_type": type(optimizer).__name__, "scheduler_type": type(scheduler).__name__,
+               "scheduler_last_epoch": scheduler.last_epoch})
     writer = SummaryWriter(str(directory / "tensorboard"))
     try:
         for epoch in range(start, config["train_params"]["epoches"]):
@@ -162,6 +186,9 @@ def train_stage(experiment, stage, resume):
             train_dataset.reinitialize()
             model.train()
             train_sum, train_samples = 0.0, 0
+            epoch_rates = [float(group["lr"]) for group in optimizer.param_groups]
+            for group_index, rate in enumerate(epoch_rates):
+                writer.add_scalar(f"train/learning_rate_{group_index}", rate, epoch + 1)
             for index, batch in enumerate(train_loader):
                 require(batch is not None, "invalid training sample; refusing silent skip")
                 batch = train_utils.to_device(batch, device)
@@ -197,18 +224,26 @@ def train_stage(experiment, stage, resume):
                 writer.add_scalar("validate/loss", validation, epoch + 1)
                 if validation < best:
                     best, best_epoch, improved = validation, epoch + 1, True
-            scheduler.step()
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                if validation is not None:
+                    scheduler.step(validation)
+            else:
+                scheduler.step()
             state = {"format": "codealign_protocol_v2", "kind": "training", "epoch": epoch + 1,
                      "model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
                      "best_val": best, "best_epoch": best_epoch, "validation_loss": validation,
-                     "rng": rng_state(generators), "provenance": identity, "data_sha256": data_hash}
+                     "rng": rng_state(generators), "provenance": identity, "data_sha256": data_hash,
+                     "config": config}
             if improved:
                 atomic_torch_save(directory / "best.pth", state)
             atomic_torch_save(directory / "latest.pth", state)
             if (epoch + 1) % config["train_params"]["save_freq"] == 0:
-                atomic_torch_save(directory / f"epoch_{epoch+1:04d}.pth", state)
+                epoch_checkpoint = directory / f"epoch_{epoch+1:04d}.pth"
+                require(not epoch_checkpoint.exists(), f"refusing to overwrite checkpoint: {epoch_checkpoint}")
+                atomic_torch_save(epoch_checkpoint, state)
             print(json.dumps({"epoch": epoch + 1, "train_loss": train_sum/train_samples,
-                              "validation_loss": validation, "best_epoch": best_epoch}), flush=True)
+                              "validation_loss": validation, "best_epoch": best_epoch,
+                              "learning_rates": epoch_rates}), flush=True)
         require((directory / "best.pth").exists(), "no validated checkpoint")
         write_json(directory / "complete.json", {"checkpoint_sha256": sha256(directory / "best.pth"),
                    "best_epoch": best_epoch, "best_validation_loss": best, "provenance": identity})
@@ -238,7 +273,7 @@ def infer(experiment, use_cav):
     import torch
     from opencood.data_utils.datasets.codealign_protocol_dataset import build_protocol_dataset, sample_keys
     from opencood.tools import train_utils
-    from opencood.tools.codealign_state import load_checkpoint, parent_checkpoints, provenance, seed_everything
+    from opencood.tools.codealign_state import load_checkpoint, parent_checkpoints, provenance, seed_everything, verify_checkpoint_identity
     from opencood.utils import eval_utils
     config, hypes, lock_hash = runtime_config(experiment, "final_infer")
     directory = Path(experiment) / "final_infer"
@@ -250,7 +285,8 @@ def infer(experiment, use_cav):
     del parents
     identity = provenance(config, lock_hash, records)
     checkpoint = load_checkpoint(directory / "best.pth")
-    require(checkpoint["kind"] == "assembly" and checkpoint["provenance"] == identity, "final checkpoint provenance mismatch")
+    require(checkpoint["kind"] == "assembly", "final checkpoint is not an assembly")
+    verify_checkpoint_identity(checkpoint["provenance"], identity, config, experiment)
     model = train_utils.create_model(hypes, train_flag=False)
     model.load_state_dict(checkpoint["model"], strict=True)
     del checkpoint

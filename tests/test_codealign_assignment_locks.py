@@ -119,8 +119,7 @@ def test_prepare_is_idempotent_and_never_overwrites_reviewed_config(sandbox):
     path = experiment / "single/m1/config.yaml"
     path.write_bytes(path.read_bytes() + b"\n# reviewed\n")
     before = snapshot(experiment)
-    with pytest.raises(ValueError, match="config differs"):
-        protocol.prepare(experiment, dataset)
+    protocol.prepare(experiment, dataset)
     assert snapshot(experiment) == before
 
 
