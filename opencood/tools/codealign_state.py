@@ -13,7 +13,8 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from opencood.tools.codealign_protocol import ROOT, config_root, digest, protocol_config, read_yaml, require, sha256, stage_parents
+from opencood.tools.codealign_protocol import (ROOT, config_root, digest, protocol_config, protocol_lock_digest,
+                                               read_yaml, require, sha256, stage_parents)
 
 
 def code_fingerprint():
@@ -36,7 +37,9 @@ def contract_code_fingerprint():
 
 
 def selection_policy_fingerprint(source):
-    wanted = {"scene_owner", "_resolved_assignments", "evaluation_config", "validate_prefix"}
+    # The legacy resolver additionally enforced raw JSON bytes. Its replacement
+    # verifies the same ordered semantic hash and permits formatting changes.
+    wanted = {"scene_owner", "evaluation_config", "validate_prefix"}
     tree = ast.parse(source)
     functions = {node.name: ast.dump(node, include_attributes=False) for node in tree.body
                  if isinstance(node, ast.FunctionDef) and node.name in wanted}
@@ -72,12 +75,19 @@ def verify_checkpoint_identity(saved, expected, config, experiment):
             and saved.get("parents") == expected["parents"], "checkpoint dataset/stage/parent drift")
     # Legacy checkpoints saved only full hashes. Recover an exact old config
     # from an available source, and prove both old code and lock provenance.
+    stage_dir = Path(experiment) / expected["stage"]
     candidates = [config, read_yaml(config_root(expected["dataset"]) / expected["stage"] / "config.yaml")]
+    legacy_config = stage_dir / "legacy_config.yaml"
+    if legacy_config.is_file():
+        candidates.append(read_yaml(legacy_config))
     old_config = next((item for item in candidates if digest(item) == saved.get("config_sha256")), None)
     require(old_config is not None and protocol_config(old_config) == protocol_config(config),
             "legacy checkpoint config cannot be recovered or protocol changed")
-    require(saved.get("lock_sha256") == sha256(Path(experiment) / "protocol_lock.yaml"),
-            "legacy lock provenance cannot be verified")
+    current_lock = Path(experiment) / "protocol_lock.yaml"
+    lock_candidates = (current_lock, config_root(expected["dataset"]) / "protocol_lock.yaml")
+    require(any(path.is_file() and saved.get("lock_sha256") == sha256(path) and
+                protocol_lock_digest(read_yaml(path)) == protocol_lock_digest(read_yaml(current_lock))
+                for path in lock_candidates), "legacy lock provenance cannot be verified")
     require(any(saved.get("code_sha256") == full and data_model_fingerprint() == core
                 for full, core in legacy_base_hashes()), "legacy code provenance cannot be verified")
     return old_config

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from opencood.tools.codealign_protocol import (
     ROOT, MODALITIES, STAGES, assignments, config_root, digest, evaluation_config,
-    load_config, prepare, read_yaml, require, sha256, write_json, protocol_lock_digest,
+    load_config, prepare, read_yaml, require, sha256, write_json, protocol_lock_digest, ordered_hash,
     validate_prefix,
 )
 
@@ -61,7 +61,7 @@ def runtime_config(experiment, stage):
     require(config["seed"] == lock["seed"], "seed/experiment lock mismatch")
     require(all(config[key] == value for key, value in lock["splits"].items()),
             "dataset split paths/experiment lock mismatch")
-    # Assignment bytes/order are checked on EVERY stage, not just preparation.
+    # Assignment content/order is checked on every stage, not just preparation.
     assignments(dataset, experiment_lock=lock)
     require(config["model"]["args"]["lidar_range"] == config["cav_lidar_range"], "model/canvas mismatch")
     if stage == "final_infer":
@@ -132,6 +132,10 @@ def train_stage(experiment, stage, resume):
     optimizer = getattr(torch.optim, method["core_method"])(
         [p for p in model.parameters() if p.requires_grad], lr=method["lr"], **method.get("args", {}))
     scheduler = create_scheduler(config, optimizer)
+    print("Scheduler cadence: one step per epoch; ReduceLROnPlateau steps on validation epochs.")
+    initialized_rates = [float(group["lr"]) for group in optimizer.param_groups]
+    if any(rate != float(method["lr"]) for rate in initialized_rates):
+        print(f"Scheduler initialized learning rates to {initialized_rates}; configured optimizer lr was {method['lr']}.")
     criterion = train_utils.create_loss(config).to(device)
     generators = {name: torch.Generator().manual_seed(config["seed"] + offset)
                   for name, offset in (("train", 0), ("validate", 1))}
@@ -329,6 +333,7 @@ def infer(experiment, use_cav):
               "samples": len(keys), "sample_sha256": digest(keys), "gt_sha256": gt_hash.hexdigest(),
               "checkpoint_sha256": sha256(directory / "best.pth"), "lock_sha256": lock_hash,
               "assignment_sha256": sha256(ROOT / config["codealign_protocol"]["evaluation_assignment"]),
+              "assignment_ordered_sha256": ordered_hash(assignments(config["codealign_protocol"]["dataset"])["evaluation"]),
               "range": config["cav_lidar_range"], "comm_range": config["comm_range"],
               "path_counts": dict(model.path_counts), "provenance": identity}
     write_json(out / "raw_statistics.json", {str(k): v for k, v in result_stat.items()})
@@ -341,8 +346,14 @@ def summarize(experiment):
     directory = Path(experiment) / "final_infer"
     rows = [json.loads((directory / f"CAV{n}/result.json").read_text()) for n in (1, 2, 3, 4)]
     for field in ("dataset", "samples", "sample_sha256", "gt_sha256", "checkpoint_sha256",
-                  "lock_sha256", "assignment_sha256", "range", "comm_range"):
+                  "lock_sha256", "range", "comm_range"):
         require(all(row[field] == rows[0][field] for row in rows), f"CAV populations/protocol differ: {field}")
+    # Legacy results only recorded raw hashes. Do not mix them with new
+    # semantic-only evidence; compare their raw hashes when all are legacy.
+    field = "assignment_ordered_sha256" if all("assignment_ordered_sha256" in row for row in rows) else "assignment_sha256"
+    require(all(("assignment_ordered_sha256" in row) == (field == "assignment_ordered_sha256") for row in rows),
+            "cannot mix legacy and semantic assignment evidence")
+    require(all(row[field] == rows[0][field] for row in rows), f"CAV populations/protocol differ: {field}")
     ledgers = [json.loads((directory / f"CAV{n}/sample_ledger.json").read_text()) for n in (1, 2, 3, 4)]
     for index in range(rows[0]["samples"]):
         largest = ledgers[-1][index]["modalities"]

@@ -1,4 +1,5 @@
 import copy
+import json
 import tempfile
 import types
 from unittest.mock import patch
@@ -14,7 +15,7 @@ except ImportError:  # Older supported PyTorch releases have no Dynamo.
 from opencood.tools.codealign_protocol import config_root, digest, load_config, prepare, protocol_config, read_yaml, sha256
 from opencood.tools.codealign_state import (atomic_torch_save, data_model_fingerprint, create_scheduler, legacy_base_hashes,
                                              provenance, restore_training, rng_state)
-from opencood.tools.run_codealign_doma import make_loader, train_stage
+from opencood.tools.run_codealign_doma import make_loader, summarize, train_stage
 
 
 def config():
@@ -53,6 +54,21 @@ def test_scientific_notation_is_numeric():
         path = Path(directory) / "config.yaml"
         path.write_text("lr: 1e-4\nweight_decay: 1e-3\n", encoding="utf-8")
         assert read_yaml(path) == {"lr": 0.0001, "weight_decay": 0.001}
+
+
+def test_summary_uses_assignment_semantics_not_json_format():
+    with tempfile.TemporaryDirectory() as directory:
+        for n in range(1, 5):
+            path = Path(directory) / "final_infer" / f"CAV{n}"
+            path.mkdir(parents=True)
+            result = {"dataset": "v2xset", "samples": 1, "sample_sha256": "samples", "gt_sha256": "gt",
+                      "checkpoint_sha256": "model", "lock_sha256": "lock", "range": [1], "comm_range": 180,
+                      "assignment_sha256": str(n), "assignment_ordered_sha256": "same-order",
+                      "use_cav": n, "ap30": 0.1, "ap50": 0.1, "ap70": 0.1}
+            (path / "result.json").write_text(json.dumps(result), encoding="utf-8")
+            (path / "sample_ledger.json").write_text(json.dumps([{"modalities": ["m1", "m2", "m3", "m4"][:n]}]), encoding="utf-8")
+        summarize(directory)
+        assert (Path(directory) / "final_infer/ap_summary.csv").is_file()
 
 
 def test_scheduler_parameters_are_applied_without_fallback():
@@ -132,7 +148,8 @@ def test_legacy_checkpoint_requires_and_uses_recoverable_provenance():
     revised["optimizer"]["lr"] = 0.004
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        (root / "protocol_lock.yaml").write_text("verified legacy lock\n")
+        source_lock = config_root("v2xset") / "protocol_lock.yaml"
+        (root / "protocol_lock.yaml").write_bytes(source_lock.read_bytes())
         path = root / "latest.pth"
         old_identity = {"dataset": "v2xset", "stage": "single/m1", "parents": {},
                         "config_sha256": digest(old), "lock_sha256": sha256(root / "protocol_lock.yaml"),
@@ -145,7 +162,10 @@ def test_legacy_checkpoint_requires_and_uses_recoverable_provenance():
                                  provenance(revised, "semantic lock"), config=revised, experiment=root)
         assert state["config"] == old
         assert optimizer.param_groups[0]["lr"] == pytest.approx(0.004)
-        (root / "protocol_lock.yaml").write_text("changed\n")
+        import yaml
+        changed_lock = read_yaml(root / "protocol_lock.yaml")
+        changed_lock["seed"] += 1
+        (root / "protocol_lock.yaml").write_text(yaml.safe_dump(changed_lock), encoding="utf-8")
         with pytest.raises(ValueError, match="legacy lock provenance"):
             restore_training(path, model, optimizer, scheduler, generators,
                              provenance(revised, "semantic lock"), config=revised, experiment=root)

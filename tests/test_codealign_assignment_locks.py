@@ -83,31 +83,31 @@ def test_order_or_mapping_changes_are_rejected_before_prepare(sandbox, mutation)
     assert not experiment.exists()
 
 
-def test_runtime_rejects_new_bytes_even_if_semantics_are_unchanged(sandbox):
+def test_runtime_accepts_new_bytes_if_semantics_are_unchanged(sandbox):
     dataset, root, experiment = sandbox
     protocol.prepare(experiment, dataset)
     path = root / records(dataset)["evaluation"]["path"]
     path.write_bytes(path.read_bytes() + b"\n")
-    # Source audit still accepts its ordered content, but the prepared run cannot.
     protocol.assignments(dataset)
     for stage in protocol.STAGES:
-        with pytest.raises(ValueError, match="experiment assignment bytes drift"):
-            runtime_config(experiment, stage)
+        runtime_config(experiment, stage)
     before = snapshot(experiment)
-    with pytest.raises(ValueError, match="experiment assignment bytes drift"):
-        protocol.prepare(experiment, dataset)
+    protocol.prepare(experiment, dataset)
     assert snapshot(experiment) == before
+    value = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps(dict(reversed(list(value.items())))), encoding="utf-8")
+    with pytest.raises(ValueError, match="assignment order drift"):
+        runtime_config(experiment, "single/m1")
 
 
-def test_runtime_rejects_wrong_hash_in_experiment_lock(sandbox):
+def test_runtime_treats_raw_hash_as_informational(sandbox):
     dataset, _, experiment = sandbox
     protocol.prepare(experiment, dataset)
     path = experiment / "protocol_lock.yaml"
     value = protocol.read_yaml(path)
     value["assignments"]["training"]["sha256"] = "0" * 64
     path.write_text(yaml.safe_dump(value), encoding="utf-8")
-    with pytest.raises(ValueError, match="experiment assignment bytes drift"):
-        runtime_config(experiment, "single/m1")
+    runtime_config(experiment, "single/m1")
 
 
 def test_prepare_is_idempotent_and_never_overwrites_reviewed_config(sandbox):

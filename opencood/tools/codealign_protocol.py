@@ -90,7 +90,7 @@ def scene_owner(scene, assignment):
 
 
 def _resolved_assignments(dataset, experiment_lock=None):
-    """Source pins ordered content; an experiment additionally pins raw bytes.
+    """Source and experiment pin ordered content; raw byte hashes are recorded.
 
     Return an independent lock with observed byte hashes, never mutate the
     source lock or assignment files. Read each JSON once so both hashes refer
@@ -114,9 +114,6 @@ def _resolved_assignments(dataset, experiment_lock=None):
         value = json.loads(raw.decode("utf-8"))
         require(ordered_hash(value) == record["ordered_sha256"], "assignment order drift")
         actual_sha = hashlib.sha256(raw).hexdigest()
-        if experiment_lock is not None:
-            require(actual_sha == experiment_lock["assignments"][name]["sha256"],
-                    f"experiment assignment bytes drift: {path}")
         observed["assignments"][name]["sha256"] = actual_sha
         for scene, members in value.items():
             require(members and all(m in MODALITIES for m in members.values()),
@@ -133,7 +130,7 @@ def _resolved_assignments(dataset, experiment_lock=None):
 
 
 def assignments(dataset, experiment_lock=None):
-    """Validate source semantics/order, plus strict bytes when a run lock is supplied."""
+    """Validate source semantics/order and experiment protocol identity."""
     return _resolved_assignments(dataset, experiment_lock)[0]
 
 
