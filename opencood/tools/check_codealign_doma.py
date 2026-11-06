@@ -79,6 +79,16 @@ def pcd_fields(path):
     raise ValueError(f"missing PCD fields: {path}")
 
 
+def read_dataset_yaml(path):
+    """Read trusted local frame annotations with OpenCOOD's NumPy-aware loader.
+
+    Experiment configurations continue to use the separate safe read_yaml.
+    """
+    from opencood.hypes_yaml.yaml_utils import load_yaml
+
+    return load_yaml(str(path))
+
+
 def audit_data(dataset, data_root=None, frames_per_scene=0, experiment=None):
     """Scan counts/coverage; 0 checks every timestamp, positive N is sampled."""
     require(frames_per_scene >= 0, "frames_per_scene must be nonnegative")
@@ -116,7 +126,7 @@ def audit_data(dataset, data_root=None, frames_per_scene=0, experiment=None):
                     prefix = scene / cav / timestamp
                     require(prefix.with_suffix(".yaml").is_file(), f"missing timestamp metadata: {prefix}")
                     metadata_json = prefix.with_suffix(".json")
-                    metadata = json.loads(metadata_json.read_text()) if metadata_json.is_file() else read_yaml(prefix.with_suffix(".yaml"))
+                    metadata = json.loads(metadata_json.read_text()) if metadata_json.is_file() else read_dataset_yaml(prefix.with_suffix(".yaml"))
                     require("lidar_pose" in metadata and "vehicles" in metadata, f"missing pose/labels: {prefix}")
                     original = prefix.with_suffix(".pcd")
                     require(original.is_file(), f"missing original PCD: {original}")
