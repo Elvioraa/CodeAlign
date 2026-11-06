@@ -41,30 +41,6 @@ def digest(value):
                                      sort_keys=True).encode()).hexdigest()
 
 
-def protocol_config(config):
-    """Comparable model/data contract, excluding explicitly tunable settings."""
-    value = copy.deepcopy(config)
-    value.pop("optimizer", None)
-    value.pop("lr_scheduler", None)
-    for key in ("batch_size", "epoches"):
-        value["train_params"].pop(key, None)
-    value.get("codealign_protocol", {}).pop("flexible_hparams", None)
-    return value
-
-
-def protocol_lock_digest(lock):
-    value = copy.deepcopy(lock)
-    for record in value["assignments"].values():
-        record.pop("sha256", None)
-    return digest(value)
-
-
-def ordered_hash(value):
-    # Assignment member order is meaningful: never sort its keys.
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False,
-                                     separators=(",", ":")).encode()).hexdigest()
-
-
 def read_yaml(path):
     with Path(path).open(encoding="utf-8") as stream:
         return yaml.load(stream, Loader=ConfigLoader)
@@ -89,36 +65,37 @@ def scene_owner(scene, assignment):
     return MODALITIES[list(assignment).index(scene) % len(MODALITIES)]
 
 
-def _resolved_assignments(dataset, experiment_lock=None):
-    """Source and experiment pin ordered content; raw byte hashes are recorded.
+def _unique_members(pairs):
+    value = {}
+    for key, item in pairs:
+        require(key not in value, f"duplicate assignment key: {key}")
+        value[key] = item
+    return value
 
-    Return an independent lock with observed byte hashes, never mutate the
-    source lock or assignment files. Read each JSON once so both hashes refer
-    to the same bytes.
+
+def assignments(dataset, config=None):
+    """Read current YAML paths and validate scene and member semantics.
+
+    Dict insertion order is retained for scene ownership and CAV prefixes.
+    A final-inference config uses its evaluation assignment for both entries;
+    it does not consult a separate training template behind the user's config.
     """
-    lock = read_yaml(config_root(dataset) / "protocol_lock.yaml")
-    require(lock["dataset"] == dataset, "source lock dataset mismatch")
-    if experiment_lock is not None:
-        normalized = copy.deepcopy(experiment_lock)
-        require(set(normalized.get("assignments", {})) == set(lock["assignments"]),
-                "experiment assignment records differ from source")
-        for name, record in lock["assignments"].items():
-            require("sha256" in normalized["assignments"][name], "missing experiment byte hash")
-            normalized["assignments"][name]["sha256"] = record["sha256"]
-        require(normalized == lock, "experiment protocol differs from source beyond assignment byte hashes")
-    observed = copy.deepcopy(lock)
+    config_root(dataset)  # Validate the supported dataset name.
+    if config is None:
+        config = load_config(config_root(dataset) / "single/m1/config.yaml")
+    require(config["codealign_protocol"]["dataset"] == dataset, "assignment dataset mismatch")
+    paths = {"training": config["heter"]["assignment_path"],
+             "evaluation": config["codealign_protocol"]["evaluation_assignment"]}
     result = {}
-    for name, record in lock["assignments"].items():
-        path = ROOT / record["path"]
-        raw = path.read_bytes()
-        value = json.loads(raw.decode("utf-8"))
-        require(ordered_hash(value) == record["ordered_sha256"], "assignment order drift")
-        actual_sha = hashlib.sha256(raw).hexdigest()
-        observed["assignments"][name]["sha256"] = actual_sha
+    for name, filename in paths.items():
+        value = json.loads((ROOT / filename).read_text(encoding="utf-8"), object_pairs_hook=_unique_members)
+        require(isinstance(value, dict) and value, "assignment must contain scenes")
         for scene, members in value.items():
-            require(members and all(m in MODALITIES for m in members.values()),
+            require(isinstance(scene, str) and scene, "invalid scene name")
+            require(isinstance(members, dict) and members and all(m in MODALITIES for m in members.values()),
                     f"invalid modality in {scene}")
-            require(all(str(int(cav)) == cav for cav in members), f"invalid CAV id in {scene}")
+            require(all(re.fullmatch(r"-?(?:0|[1-9][0-9]*)", cav) and cav != "-0" for cav in members),
+                    f"invalid CAV id in {scene}")
             if name == "evaluation":
                 require(next(iter(members.values())) == "m1", f"ego is not m1: {scene}")
                 require(int(next(iter(members))) >= 0, f"infrastructure ego: {scene}")
@@ -126,12 +103,9 @@ def _resolved_assignments(dataset, experiment_lock=None):
                         f"invalid ordered prefix: {scene}")
         result[name] = value
     require(set(result["evaluation"]) <= set(result["training"]), "unknown evaluation scene")
-    return result, observed
-
-
-def assignments(dataset, experiment_lock=None):
-    """Validate source semantics/order and experiment protocol identity."""
-    return _resolved_assignments(dataset, experiment_lock)[0]
+    require(all(set(members) == set(result["training"][scene])
+                for scene, members in result["evaluation"].items()), "evaluation CAV coverage differs")
+    return result
 
 
 def load_config(path):
@@ -146,7 +120,7 @@ def validate_config(config):
     require(dataset in ("opv2v", "v2xset") and stage in STAGES, "invalid stage identity")
     require(config["model"]["core_method"] == "codealign_doma_protocol", "wrong model entry")
     require(config["fusion"]["dataset"] == dataset, "dataset identity mismatch")
-    require(config["seed"] == protocol["seed"], "seed mismatch")
+    require(type(config["seed"]) is int, "seed must be an integer")
     require(len({config[k] for k in ("root_dir", "validate_dir", "test_dir")}) == 3,
             "train/validation/test paths overlap")
     require(config["train_params"]["max_cav"] == 5, "GT max_cav drift")
@@ -202,39 +176,32 @@ def prepare(experiment, dataset):
     protected = (ROOT / "opencood/hypes_yaml").resolve()
     require(experiment != protected and protected not in experiment.parents,
             "experiment directory must be outside source hypes_yaml")
-    lock_path = experiment / "protocol_lock.yaml"
-    existing_lock = read_yaml(lock_path) if lock_path.exists() else None
-    _, observed_lock = _resolved_assignments(dataset, existing_lock)
-    manifest = read_yaml(source / "manifest.yaml")
-    for filename in ("manifest.yaml",):
-        dst = experiment / filename
-        require(not dst.exists() or dst.read_bytes() == (source / filename).read_bytes(),
-                f"existing experiment identity differs: {dst}")
+    manifest_path = experiment / "manifest.yaml"
+    manifest = read_yaml(manifest_path if manifest_path.exists() else source / "manifest.yaml")
+    require(manifest["dataset"] == dataset, "experiment dataset mismatch")
+    require(list(manifest["stages"]) == list(STAGES), "incomplete stage graph")
+    for stage, entry in manifest["stages"].items():
+        require(entry["parents"] == stage_parents(stage), f"wrong parent graph: {stage}")
+        require(entry["config"] == f"{stage}/config.yaml" and entry["checkpoint"] == f"{stage}/best.pth",
+                f"wrong stage paths: {stage}")
     # Check everything first; never overwrite a reviewed config.
     for stage in STAGES:
         src = source / stage / "config.yaml"
-        source_config = load_config(src)
         dst = experiment / stage / "config.yaml"
-        if dst.exists():
-            try:
-                reviewed = load_config(dst)
-            except (KeyError, TypeError) as exc:
-                raise ValueError(f"config differs: {dst}") from exc
-            require(protocol_config(reviewed) == protocol_config(source_config), f"config differs: {dst}")
+        try:
+            config = load_config(dst if dst.exists() else src)
+        except (KeyError, TypeError) as exc:
+            raise ValueError(f"invalid config: {dst}") from exc
+        require(config["codealign_protocol"]["dataset"] == dataset and
+                config["codealign_protocol"]["stage"] == stage, f"wrong stage identity: {dst}")
+        assignments(dataset, config)
     for stage in STAGES:
         dst = experiment / stage / "config.yaml"
         dst.parent.mkdir(parents=True, exist_ok=True)
         if not dst.exists():
             dst.write_bytes((source / stage / "config.yaml").read_bytes())
-    if not lock_path.exists():
-        lock_path.write_text(yaml.safe_dump(observed_lock, allow_unicode=True, sort_keys=False),
-                             encoding="utf-8")
-    for filename in ("manifest.yaml",):
-        dst = experiment / filename
-        require(not dst.exists() or dst.read_bytes() == (source / filename).read_bytes(),
-                f"existing experiment identity differs: {dst}")
-        if not dst.exists():
-            dst.write_bytes((source / filename).read_bytes())
+    if not manifest_path.exists():
+        manifest_path.write_bytes((source / "manifest.yaml").read_bytes())
     return manifest
 
 

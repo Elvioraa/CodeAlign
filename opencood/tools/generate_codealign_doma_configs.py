@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from opencood.tools.codealign_protocol import (
-    ROOT, MODALITIES, STAGES, config_root, digest, ordered_hash, sha256, stage_parents,
+    ROOT, MODALITIES, STAGES, config_root, stage_parents,
 )
 
 
@@ -42,45 +42,15 @@ def generate(reference):
             out.write_text(text, encoding="utf-8")
             refs[name] = yaml.safe_load(text)
             provenance[name] = {"origin": origin, "copy": out.relative_to(ROOT).as_posix(),
-                                "sha256": sha256(out), "parsed_sha256": digest(refs[name]),
                                 "status": "saved_run_snapshot" if dataset == "opv2v" else "local_reference_only"}
         base = config_root(dataset)
         assignment_records = {}
         for kind, suffix in (("training", ""), ("evaluation", "_in_order")):
             path = ROOT / f"opencood/modality_assign/{dataset}_4modality{suffix}.json"
-            value = json.loads(path.read_text())
-            reference_path = reference / path.relative_to(ROOT)
-            assignment_records[kind] = {"path": path.relative_to(ROOT).as_posix(), "sha256": sha256(path),
-                                        "ordered_sha256": ordered_hash(value), "scenarios": len(value),
-                                        "equals_local_DOMA": json.loads(reference_path.read_text()) == value}
+            assignment_records[kind] = {"path": path.relative_to(ROOT).as_posix()}
         final = refs["final"]
         evaluate_range = [-204.8, -102.4, -3, 204.8, 102.4, 1]
-        lock = {"schema_version": 2, "dataset": dataset, "codealign_base": "75d5ecd359d36a64a3af3d64c4fe32e72ed344bc",
-                "reference_doma_commit": "ef19dd01fbbbe35b82956b37c7b1a5b4bbf1bfd8",
-                "reference_server": "/home/fkk/my_data/disk2/code/DOMA",
-                "seed": 303, "reference_configs": provenance, "assignments": assignment_records,
-                "data_identity": "OPV2V with OPV2V_Hetero 32-beam and depth extensions (OPV2V-H protocol)" if dataset == "opv2v" else "V2XSet original PCD and four RGB cameras",
-                "sensor_policy": {"m1": "original_PCD_PointPillar", "m2": "LSS_EfficientNet",
-                                  "m3": "OPV2V_Hetero_32_PCD_SECOND" if dataset == "opv2v" else "original_PCD_SECOND",
-                                  "m4": "LSS_Resnet101"},
-                "sensor_policy_source": "user clarification 2026-10-27; DOMA local configs",
-                "splits": {k: final[k] for k in ("root_dir", "validate_dir", "test_dir")},
-                "training": {"comm_range": 70, "max_cav": 5,
-                             "modality_ranges": {m: refs[m]["cav_lidar_range"] for m in MODALITIES},
-                             "isolation": "insertion_order_scene_index_mod_4; disjoint source scenes in every stage",
-                             "budget_policy": "CodeAlign native templates; not DOMA/STAMP training budgets",
-                             "epochs": {"single": 50, "code_space": 50, "fcf": 30}},
-                "evaluation": {"range": evaluate_range, "comm_range": 180, "max_cav": 5,
-                               "use_cav": [1, 2, 3, 4], "ego": "m1", "gt": "all_in_range_agents_before_prefix_cutoff",
-                               "gt_label_source": "lidar_for_every_modality_via_visualize_true",
-                               "iou": [0.3, 0.5, 0.7], "postprocess": final["postprocess"],
-                               "range_source": "DOMA inference_doma_heter_in_order.py default/recursive override",
-                               "runtime_confirmation": "SERVER_VALIDATION_REQUIRED",
-                               "note": "OPV2V saved logs confirm dataset/AP, not historical CLI flags. V2XSet is a local reference, not a server run snapshot."},
-                "server_validation_required": ["actual data identity and split/sample counts", "actual DOMA final range/GT/NMS/CLI provenance",
-                                               "CUDA/spconv DataLoader and full forward/backward", "training, full-state resume and final AP"],
-                "camera_excluded_scenes": [] if dataset == "opv2v" else ["2021_09_09_13_20_58"]}
-        dump(base / "protocol_lock.yaml", lock)
+        excluded_scenes = [] if dataset == "opv2v" else ["2021_09_09_13_20_58"]
         entries = {}
         for stage in STAGES:
             final_stage = stage == "final_infer"
@@ -159,10 +129,15 @@ def generate(reference):
                       "loader": {"num_workers": 4, "prefetch_factor": 2, "pin_memory": True, "persistent_workers": False},
                       "reproducibility": {"deterministic_algorithms": False, "cudnn_deterministic": True, "cudnn_benchmark": False},
                       "codealign_protocol": {"dataset": dataset, "stage": stage, "source": source, "target": "m1", "seed": 303,
-                          "scene_partition": "assignment_insertion_index_mod4", "camera_excluded_scenes": lock["camera_excluded_scenes"],
+                          "scene_partition": "assignment_insertion_index_mod4", "camera_excluded_scenes": excluded_scenes,
                           "evaluation_assignment": assignment_records["evaluation"]["path"], "budget_source": (native / budget_name).relative_to(ROOT).as_posix(),
                           "reference_sensor_source": provenance["final" if final_stage else source]["copy"]}}
             config["train_params"]["max_cav"] = 5
+            if dataset == "opv2v" and not final_stage:
+                batches = {"single": dict(zip(MODALITIES, (4, 2, 8, 4))),
+                           "code_space": dict(zip(MODALITIES, (8, 4, 8, 4))),
+                           "fcf": dict.fromkeys(MODALITIES[1:], 2)}
+                config["train_params"]["batch_size"] = batches[stage.split("/")[0]][source]
             if stage.startswith("code_space/"):
                 config["train_params"]["epoches"] = 50
             if final_stage:
@@ -174,7 +149,7 @@ def generate(reference):
                               "checkpoint": f"{stage}/best.pth", "budget_source": config["codealign_protocol"]["budget_source"]}
         dump(base / "manifest.yaml", {"dataset": dataset, "stages": entries,
                                       "checkpoint_policy": "unique best validation loss; complete state latest.pth for resume"})
-        records[dataset] = lock
+        records[dataset] = {"dataset": dataset, "stages": entries, "sources": provenance}
     return records
 
 

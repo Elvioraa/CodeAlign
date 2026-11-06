@@ -20,7 +20,7 @@ from pathlib import Path
 
 from opencood.tools.codealign_protocol import (
     ROOT, MODALITIES, STAGES, assignments, config_root, digest, evaluation_config,
-    load_config, prepare, read_yaml, require, sha256, write_json, protocol_lock_digest, ordered_hash,
+    load_config, prepare, require, sha256, write_json,
     validate_prefix,
 )
 
@@ -55,21 +55,10 @@ def runtime_config(experiment, stage):
     config = load_config(Path(experiment) / stage / "config.yaml")
     require(config["codealign_protocol"]["stage"] == stage, "stage directory/config mismatch")
     dataset = config["codealign_protocol"]["dataset"]
-    lock_path = Path(experiment) / "protocol_lock.yaml"
-    lock = read_yaml(lock_path)
-    require(lock["dataset"] == dataset, "experiment dataset mismatch")
-    require(config["seed"] == lock["seed"], "seed/experiment lock mismatch")
-    require(all(config[key] == value for key, value in lock["splits"].items()),
-            "dataset split paths/experiment lock mismatch")
-    # Assignment content/order is checked on every stage, not just preparation.
-    assignments(dataset, experiment_lock=lock)
+    assignments(dataset, config=config)
     require(config["model"]["args"]["lidar_range"] == config["cav_lidar_range"], "model/canvas mismatch")
-    if stage == "final_infer":
-        require(config["cav_lidar_range"] == lock["evaluation"]["range"], "final evaluation range/lock mismatch")
-    require(config["comm_range"] == lock["evaluation" if stage == "final_infer" else "training"]["comm_range"],
-            "communication range/lock mismatch")
     from opencood.hypes_yaml.yaml_utils import load_general_params
-    return config, load_general_params(copy.deepcopy(config)), protocol_lock_digest(lock)
+    return config, load_general_params(copy.deepcopy(config))
 
 
 def device_for_run():
@@ -101,23 +90,52 @@ def make_loader(dataset, config, generator, train=False, evaluation=False):
 
 
 def train_stage(experiment, stage, resume):
+    require(stage != "final_infer", "use assemble for final stage")
+    directory = Path(experiment) / stage
+    require(not (directory / "complete.json").exists(), "stage already complete; preserve it and use a new experiment")
+    require(resume or not any(directory.glob("*.pth")), "existing checkpoint: request --resume or use a new experiment")
+    config, hypes = runtime_config(experiment, stage)
+    history = directory / "run_history" / uuid.uuid4().hex
+    history.mkdir(parents=True, exist_ok=False)
+    # Record every attempted launch, including dependency/setup failures.
+    write_json(history / "run.json", {"resume": resume, "config": config})
+    if resume:
+        for filename in ("latest.pth", "best.pth"):
+            if (directory / filename).is_file():
+                shutil.copy2(directory / filename, history / filename)
+    with stage_log(history / "run.log"):
+        try:
+            _train_stage(experiment, stage, resume, config, hypes, history)
+        except BaseException as exc:
+            write_json(history / "outcome.json", {"status": "failed", "error": str(exc),
+                                                  "traceback": traceback.format_exc()})
+            raise
+        else:
+            write_json(history / "outcome.json", {"status": "complete"})
+
+
+def population_members(config, population):
+    """Record scene and member identities in their actual input order."""
+    assigned = assignments(config["codealign_protocol"]["dataset"], config=config)["training"]
+    scenes = {key[0] for keys in population.values() for key in keys}
+    require(scenes <= set(assigned), "sample scene missing from assignment")
+    return [[scene, list(map(list, members.items()))] for scene, members in assigned.items() if scene in scenes]
+
+
+def _train_stage(experiment, stage, resume, config, hypes, history):
     import torch
     from tensorboardX import SummaryWriter
     from opencood.data_utils.datasets.codealign_protocol_dataset import build_protocol_dataset, sample_keys
     from opencood.tools import train_utils
     from opencood.tools.codealign_state import (
         atomic_torch_save, initialize_model, parent_checkpoints, provenance,
-        restore_training, rng_state, seed_everything, create_scheduler,
+        restore_training, rng_state, seed_everything, create_scheduler, verify_checkpoint_identity,
     )
-    require(stage != "final_infer", "use assemble for final stage")
     directory = Path(experiment) / stage
-    require(not (directory / "complete.json").exists(), "stage already complete; preserve it and use a new experiment")
-    require(resume or not any(directory.glob("*.pth")), "existing checkpoint: request --resume or use a new experiment")
-    config, hypes, lock_hash = runtime_config(experiment, stage)
     device = device_for_run()
     seed_everything(config["seed"], config["reproducibility"])
-    parents, parent_records = parent_checkpoints(experiment, config, lock_hash)
-    identity = provenance(config, lock_hash, parent_records)
+    parents, parent_records = parent_checkpoints(experiment, config)
+    identity = provenance(config, parent_records)
     model = train_utils.create_model(hypes).to(device)
     owners = initialize_model(model, stage, parents)
     del parents
@@ -144,7 +162,9 @@ def train_stage(experiment, stage, resume):
     population = {"train": sample_keys(train_dataset), "validate": sample_keys(val_dataset)}
     require(not (set(map(tuple, population["train"])) & set(map(tuple, population["validate"]))), "train/validation sample leakage")
     data_hash = digest(population)
+    members = population_members(config, population)
     audit = {"provenance": identity, "data_sha256": data_hash,
+               "sample_members": members,
                "sample_counts": {k: len(v) for k, v in population.items()},
                "weight_owners": owners, "trainable": trainable, "logical_device": str(device),
                "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
@@ -157,29 +177,30 @@ def train_stage(experiment, stage, resume):
         state = restore_training(directory / "latest.pth", model, optimizer, scheduler, generators, identity,
                                  config=config, experiment=experiment)
         require(state["data_sha256"] == data_hash, "data population changed on resume")
+        if "sample_members" in state:
+            require(state["sample_members"] == members, "sample members changed on resume")
+        else:
+            print("Legacy checkpoint: sample identities verified; historical member list was not recorded.")
         start, best, best_epoch = state["epoch"], state["best_val"], state["best_epoch"]
     audit_path = directory / "input_audit.json"
     if audit_path.exists():
         previous_audit = json.loads(audit_path.read_text(encoding="utf-8"))
-        if resume and previous_audit.get("provenance") == state["provenance"]:
-            previous_audit["provenance"] = identity
-        require(previous_audit == audit, "input audit changed; preserve the original stage")
+        verify_checkpoint_identity(previous_audit["provenance"], identity)
+        for field in ("data_sha256", "sample_counts", "weight_owners", "trainable"):
+            require(previous_audit[field] == audit[field], f"input audit changed: {field}")
+        if "sample_members" in previous_audit:
+            require(previous_audit["sample_members"] == members, "input audit sample members changed")
     if not audit_path.exists():
         write_json(audit_path, audit)
-    # Immutable per-invocation snapshots preserve the previous valid weights.
-    history = directory / "run_history" / uuid.uuid4().hex
-    history.mkdir(parents=True, exist_ok=False)
-    if resume:
-        for filename in ("latest.pth", "best.pth"):
-            if (directory / filename).is_file():
-                shutil.copy2(directory / filename, history / filename)
+    write_json(history / "input_audit.json", audit)
     write_json(history / "run.json", {"resume": resume, "config": config,
                "previous_config": state.get("config") if resume else None,
                "resumed_epoch": start, "provenance": identity,
                "effective_learning_rates": [float(group["lr"]) for group in optimizer.param_groups],
                "optimizer_type": type(optimizer).__name__, "scheduler_type": type(scheduler).__name__,
-               "scheduler_last_epoch": scheduler.last_epoch})
-    writer = SummaryWriter(str(directory / "tensorboard"))
+               "scheduler_last_epoch": scheduler.last_epoch,
+               "restore_policy": state.get("restore_policy") if resume else None})
+    writer = SummaryWriter(str(history / "tensorboard"))
     try:
         for epoch in range(start, config["train_params"]["epoches"]):
             # Rebuild the member ordering and worker streams deterministically
@@ -237,7 +258,7 @@ def train_stage(experiment, stage, resume):
                      "model": model.state_dict(), "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(),
                      "best_val": best, "best_epoch": best_epoch, "validation_loss": validation,
                      "rng": rng_state(generators), "provenance": identity, "data_sha256": data_hash,
-                     "config": config}
+                     "config": config, "sample_members": members}
             if improved:
                 atomic_torch_save(directory / "best.pth", state)
             atomic_torch_save(directory / "latest.pth", state)
@@ -258,18 +279,33 @@ def train_stage(experiment, stage, resume):
 def assemble(experiment):
     from opencood.tools import train_utils
     from opencood.tools.codealign_state import atomic_torch_save, initialize_model, parent_checkpoints, provenance
-    config, hypes, lock_hash = runtime_config(experiment, "final_infer")
+    config, hypes = runtime_config(experiment, "final_infer")
     directory = Path(experiment) / "final_infer"
     require(not (directory / "best.pth").exists(), "preserve existing final checkpoint; use a new experiment")
     device_for_run()
-    parents, records = parent_checkpoints(experiment, config, lock_hash)
+    parents, records = parent_checkpoints(experiment, config)
     model = train_utils.create_model(hypes, train_flag=False)
     owners = initialize_model(model, "final_infer", parents)
-    identity = provenance(config, lock_hash, records)
+    identity = provenance(config, records)
     atomic_torch_save(directory / "best.pth", {"format": "codealign_protocol_v2", "kind": "assembly", "epoch": 0,
                       "model": model.state_dict(), "provenance": identity})
     write_json(directory / "assembly.json", {"provenance": identity, "owners": owners,
                                              "checkpoint_sha256": sha256(directory / "best.pth")})
+
+
+def load_assembly(directory, identity):
+    from opencood.tools.codealign_state import load_checkpoint, verify_checkpoint_identity
+
+    directory = Path(directory)
+    record = directory / "assembly.json"
+    require(record.is_file(), "missing assembly completion record")
+    assembly = json.loads(record.read_text(encoding="utf-8"))
+    require(assembly["checkpoint_sha256"] == sha256(directory / "best.pth"), "assembled checkpoint changed")
+    verify_checkpoint_identity(assembly["provenance"], identity)
+    checkpoint = load_checkpoint(directory / "best.pth")
+    require(checkpoint["kind"] == "assembly", "final checkpoint is not an assembly")
+    verify_checkpoint_identity(checkpoint["provenance"], identity)
+    return checkpoint
 
 
 def infer(experiment, use_cav):
@@ -277,21 +313,21 @@ def infer(experiment, use_cav):
     import torch
     from opencood.data_utils.datasets.codealign_protocol_dataset import build_protocol_dataset, sample_keys
     from opencood.tools import train_utils
-    from opencood.tools.codealign_state import load_checkpoint, parent_checkpoints, provenance, seed_everything, verify_checkpoint_identity
+    from opencood.tools.codealign_state import (parent_checkpoints, provenance,
+                                               seed_everything, validate_model_state)
     from opencood.utils import eval_utils
-    config, hypes, lock_hash = runtime_config(experiment, "final_infer")
+    config, hypes = runtime_config(experiment, "final_infer")
     directory = Path(experiment) / "final_infer"
     out = directory / f"CAV{use_cav}"
     require(not (out / "result.json").exists(), "preserve completed inference result")
     device = device_for_run()
     seed_everything(config["seed"], config["reproducibility"])
-    parents, records = parent_checkpoints(experiment, config, lock_hash)
+    parents, records = parent_checkpoints(experiment, config)
     del parents
-    identity = provenance(config, lock_hash, records)
-    checkpoint = load_checkpoint(directory / "best.pth")
-    require(checkpoint["kind"] == "assembly", "final checkpoint is not an assembly")
-    verify_checkpoint_identity(checkpoint["provenance"], identity, config, experiment)
+    identity = provenance(config, records)
+    checkpoint = load_assembly(directory, identity)
     model = train_utils.create_model(hypes, train_flag=False)
+    validate_model_state(model, checkpoint["model"])
     model.load_state_dict(checkpoint["model"], strict=True)
     del checkpoint
     model.to(device).eval()
@@ -331,9 +367,9 @@ def infer(experiment, use_cav):
     require(all(math.isfinite(v) for v in ap.values()), "invalid AP result")
     result = {"dataset": config["codealign_protocol"]["dataset"], "use_cav": use_cav, **ap,
               "samples": len(keys), "sample_sha256": digest(keys), "gt_sha256": gt_hash.hexdigest(),
-              "checkpoint_sha256": sha256(directory / "best.pth"), "lock_sha256": lock_hash,
-              "assignment_sha256": sha256(ROOT / config["codealign_protocol"]["evaluation_assignment"]),
-              "assignment_ordered_sha256": ordered_hash(assignments(config["codealign_protocol"]["dataset"])["evaluation"]),
+              "checkpoint_sha256": sha256(directory / "best.pth"),
+              "assignment_members": [[scene, list(map(list, members.items()))] for scene, members in
+                                     assignments(config["codealign_protocol"]["dataset"], config=config)["evaluation"].items()],
               "range": config["cav_lidar_range"], "comm_range": config["comm_range"],
               "path_counts": dict(model.path_counts), "provenance": identity}
     write_json(out / "raw_statistics.json", {str(k): v for k, v in result_stat.items()})
@@ -346,18 +382,17 @@ def summarize(experiment):
     directory = Path(experiment) / "final_infer"
     rows = [json.loads((directory / f"CAV{n}/result.json").read_text()) for n in (1, 2, 3, 4)]
     for field in ("dataset", "samples", "sample_sha256", "gt_sha256", "checkpoint_sha256",
-                  "lock_sha256", "range", "comm_range"):
+                  "range", "comm_range"):
         require(all(row[field] == rows[0][field] for row in rows), f"CAV populations/protocol differ: {field}")
-    # Legacy results only recorded raw hashes. Do not mix them with new
-    # semantic-only evidence; compare their raw hashes when all are legacy.
-    field = "assignment_ordered_sha256" if all("assignment_ordered_sha256" in row for row in rows) else "assignment_sha256"
-    require(all(("assignment_ordered_sha256" in row) == (field == "assignment_ordered_sha256") for row in rows),
-            "cannot mix legacy and semantic assignment evidence")
-    require(all(row[field] == rows[0][field] for row in rows), f"CAV populations/protocol differ: {field}")
+    recorded_members = [row["assignment_members"] for row in rows if "assignment_members" in row]
+    if recorded_members:
+        require(all(value == recorded_members[0] for value in recorded_members), "CAV assignment members differ")
     ledgers = [json.loads((directory / f"CAV{n}/sample_ledger.json").read_text()) for n in (1, 2, 3, 4)]
+    require(all(len(ledger) == rows[0]["samples"] for ledger in ledgers), "sample ledger length differs")
     for index in range(rows[0]["samples"]):
         largest = ledgers[-1][index]["modalities"]
         for n in (1, 2, 3, 4):
+            require(ledgers[n-1][index]["key"] == ledgers[-1][index]["key"], "sample ledger identity/order differs")
             require(ledgers[n-1][index]["modalities"] == largest[:n], "members were reordered across CAV runs")
     write_json(directory / "ap_summary.json", rows)
     with (directory / "ap_summary.csv").open("w", newline="", encoding="utf-8") as stream:

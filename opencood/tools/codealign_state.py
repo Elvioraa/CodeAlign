@@ -1,96 +1,34 @@
 """Separate pretraining, validation selection and complete epoch-boundary resume."""
-import hashlib
-import ast
+import copy
 import inspect
 import os
 import random
-import io
-import subprocess
-import tarfile
-from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 import torch
 
-from opencood.tools.codealign_protocol import (ROOT, config_root, digest, protocol_config, protocol_lock_digest,
-                                               read_yaml, require, sha256, stage_parents)
+from opencood.tools.codealign_protocol import require, sha256, stage_parents
 
 
-def code_fingerprint():
-    return digest({p.relative_to(ROOT).as_posix(): sha256(p)
-                   for p in sorted((ROOT / "opencood").rglob("*.py"))})
+def _parent_identity(parents):
+    """Paths and old metadata are informational; actual weight dependencies matter."""
+    require(isinstance(parents, dict), "invalid checkpoint parents")
+    result = {}
+    for stage, record in parents.items():
+        require(isinstance(record, dict) and record.get("sha256") and "epoch" in record,
+                f"incomplete parent checkpoint identity: {stage}")
+        result[stage] = {"sha256": record["sha256"], "epoch": record["epoch"]}
+    return result
 
 
-def data_model_fingerprint():
-    return digest({p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
-                   for part in ("models", "data_utils", "loss", "utils")
-                   for p in sorted((ROOT / "opencood" / part).rglob("*.py"))})
-
-
-def contract_code_fingerprint():
-    # Pin selection/assignment policies while allowing runner maintenance.
-    from opencood.tools import codealign_protocol as protocol
-    policy = {name: ast.dump(ast.parse(inspect.getsource(getattr(protocol, name))), include_attributes=False)
-              for name in ("scene_owner", "_resolved_assignments", "evaluation_config", "validate_prefix")}
-    return digest({"model_data": data_model_fingerprint(), "policy": policy})
-
-
-def selection_policy_fingerprint(source):
-    # The legacy resolver additionally enforced raw JSON bytes. Its replacement
-    # verifies the same ordered semantic hash and permits formatting changes.
-    wanted = {"scene_owner", "evaluation_config", "validate_prefix"}
-    tree = ast.parse(source)
-    functions = {node.name: ast.dump(node, include_attributes=False) for node in tree.body
-                 if isinstance(node, ast.FunctionDef) and node.name in wanted}
-    require(set(functions) == wanted, "incomplete assignment policy")
-    return digest(functions)
-
-
-@lru_cache(maxsize=1)
-def legacy_base_hashes():
-    """Identify unmodified e63957b Linux/Windows code without trusting current tools."""
-    archive = subprocess.check_output(["git", "archive", "e63957b", "opencood"], cwd=str(ROOT))
-    with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
-        files = {m.name: tar.extractfile(m).read() for m in tar.getmembers()
-                 if m.isfile() and m.name.endswith(".py")}
-    require(selection_policy_fingerprint(files["opencood/tools/codealign_protocol.py"].decode("utf-8")) ==
-            selection_policy_fingerprint((ROOT / "opencood/tools/codealign_protocol.py").read_text(encoding="utf-8")),
-            "legacy assignment policy changed")
-    results = []
-    for windows in (False, True):
-        material = {k: (v.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n") if windows else v)
-                    for k, v in files.items()}
-        full = digest({k: hashlib.sha256(v).hexdigest() for k, v in material.items()})
-        core = digest({k: hashlib.sha256(v.replace(b"\r\n", b"\n")).hexdigest() for k, v in material.items()
-                       if k.split("/")[1] in ("models", "data_utils", "loss", "utils")})
-        results.append((full, core))
-    return results
-
-
-def verify_checkpoint_identity(saved, expected, config, experiment):
-    if saved == expected:
-        return None
-    require(saved.get("dataset") == expected["dataset"] and saved.get("stage") == expected["stage"]
-            and saved.get("parents") == expected["parents"], "checkpoint dataset/stage/parent drift")
-    # Legacy checkpoints saved only full hashes. Recover an exact old config
-    # from an available source, and prove both old code and lock provenance.
-    stage_dir = Path(experiment) / expected["stage"]
-    candidates = [config, read_yaml(config_root(expected["dataset"]) / expected["stage"] / "config.yaml")]
-    legacy_config = stage_dir / "legacy_config.yaml"
-    if legacy_config.is_file():
-        candidates.append(read_yaml(legacy_config))
-    old_config = next((item for item in candidates if digest(item) == saved.get("config_sha256")), None)
-    require(old_config is not None and protocol_config(old_config) == protocol_config(config),
-            "legacy checkpoint config cannot be recovered or protocol changed")
-    current_lock = Path(experiment) / "protocol_lock.yaml"
-    lock_candidates = (current_lock, config_root(expected["dataset"]) / "protocol_lock.yaml")
-    require(any(path.is_file() and saved.get("lock_sha256") == sha256(path) and
-                protocol_lock_digest(read_yaml(path)) == protocol_lock_digest(read_yaml(current_lock))
-                for path in lock_candidates), "legacy lock provenance cannot be verified")
-    require(any(saved.get("code_sha256") == full and data_model_fingerprint() == core
-                for full, core in legacy_base_hashes()), "legacy code provenance cannot be verified")
-    return old_config
+def verify_checkpoint_identity(saved, expected, config=None, experiment=None):
+    """Check dataset, stage and actual parent weights, including old checkpoints."""
+    require(isinstance(saved, dict) and isinstance(expected, dict), "missing checkpoint identity")
+    require(saved.get("dataset") == expected.get("dataset") and
+            saved.get("stage") == expected.get("stage"), "checkpoint dataset/stage drift")
+    require(_parent_identity(saved.get("parents", {})) == _parent_identity(expected.get("parents", {})),
+            "checkpoint parent weights changed")
 
 
 def seed_everything(seed, options=None):
@@ -163,36 +101,56 @@ def load_checkpoint(path):
     if "weights_only" in inspect.signature(torch.load).parameters:
         options["weights_only"] = False
     value = torch.load(path, **options)
-    require(value.get("format") == "codealign_protocol_v2", f"unrecognized checkpoint: {path}")
+    require(isinstance(value, dict) and value.get("format") == "codealign_protocol_v2", f"unrecognized checkpoint: {path}")
     return value
 
 
-def provenance(config, lock_hash, parents=None):
-    return {"dataset": config["codealign_protocol"]["dataset"], "stage": config["codealign_protocol"]["stage"],
-            "config_sha256": digest(protocol_config(config)), "lock_sha256": lock_hash,
-            "code_sha256": contract_code_fingerprint(), "parents": parents or {}}
+def provenance(config, parents=None):
+    return {"dataset": config["codealign_protocol"]["dataset"],
+            "stage": config["codealign_protocol"]["stage"], "parents": parents or {}}
 
 
-def parent_checkpoints(experiment, config, lock_hash):
-    from opencood.tools.codealign_protocol import load_config, read_yaml
+def parent_checkpoints(experiment, config):
+    from opencood.tools.codealign_protocol import load_config
+    import json
+
     experiment = Path(experiment)
-    states, records = {}, {}
-    for stage in stage_parents(config["codealign_protocol"]["stage"]):
+    dataset = config["codealign_protocol"]["dataset"]
+    checked = {}
+
+    def completed(stage):
+        if stage in checked:
+            return checked[stage]
         directory = experiment / stage
         path = directory / "best.pth"
         completion = directory / "complete.json"
         require(completion.is_file(), f"parent stage is not complete: {stage}")
-        import json
-        complete = json.loads(completion.read_text())
-        require(complete["checkpoint_sha256"] == sha256(path), f"parent checkpoint changed: {stage}")
-        value = load_checkpoint(path)
+        complete = json.loads(completion.read_text(encoding="utf-8"))
+        require(path.is_file(), f"missing parent checkpoint: {stage}")
+        checksum = sha256(path)
+        require(complete["checkpoint_sha256"] == checksum, f"parent checkpoint changed: {stage}")
         parent_config = load_config(directory / "config.yaml")
-        expected = provenance(parent_config, lock_hash, value["provenance"]["parents"])
-        verify_checkpoint_identity(value["provenance"], expected, parent_config, experiment)
-        require(value["provenance"]["dataset"] == config["codealign_protocol"]["dataset"], "cross-dataset parent")
+        require(parent_config["codealign_protocol"]["stage"] == stage and
+                parent_config["codealign_protocol"]["dataset"] == dataset, "cross-dataset/stage parent")
+        # Verify dependency records without retaining every ancestor model and
+        # optimizer in memory. Only direct parents supply tensors for assembly.
+        ancestors = {parent: completed(parent)[0] for parent in stage_parents(stage)}
+        expected = provenance(parent_config, ancestors)
+        verify_checkpoint_identity(complete["provenance"], expected)
+        require(isinstance(complete.get("best_epoch"), int), f"invalid parent epoch: {stage}")
+        record = {"path": str(path.resolve()), "sha256": checksum, "epoch": complete["best_epoch"]}
+        checked[stage] = record, expected
+        return checked[stage]
+
+    states, records = {}, {}
+    for stage in stage_parents(config["codealign_protocol"]["stage"]):
+        record, expected = completed(stage)
+        value = load_checkpoint(record["path"])
+        verify_checkpoint_identity(value["provenance"], expected)
+        require(value.get("kind") == "training" and value.get("epoch") == record["epoch"],
+                f"invalid parent training checkpoint: {stage}")
         states[stage] = value["model"]
-        records[stage] = {"path": str(path.resolve()), "sha256": sha256(path),
-                          "epoch": value["epoch"], "config_sha256": value["provenance"]["config_sha256"]}
+        records[stage] = record
     return states, records
 
 
@@ -236,53 +194,88 @@ def initialize_model(model, stage, states):
     return owners
 
 
+def validate_model_state(model, saved_model):
+    """Prevent strict load_state_dict from silently casting checkpoint tensors."""
+    current = model.state_dict()
+    require(isinstance(saved_model, dict) and set(current) == set(saved_model), "resume model keys differ")
+    for key, tensor in current.items():
+        saved = saved_model[key]
+        require(isinstance(saved, torch.Tensor) and saved.shape == tensor.shape and saved.dtype == tensor.dtype,
+                f"resume model tensor incompatible: {key}")
+
+
 def restore_training(path, model, optimizer, scheduler, generators, expected_provenance, config=None, experiment=None):
     state = load_checkpoint(path)
     old_config = state.get("config")
-    if state["provenance"] != expected_provenance:
-        require(config is not None and experiment is not None, "resume identity/config/code/parent drift")
-        old_config = verify_checkpoint_identity(state["provenance"], expected_provenance, config, experiment)
-        state["config"] = old_config
+    verify_checkpoint_identity(state["provenance"], expected_provenance)
     require(state["kind"] == "training", "final assembly is not a training resume")
-    current = model.state_dict()
-    require(set(current) == set(state["model"]), "resume model keys differ")
-    for key, tensor in current.items():
-        saved = state["model"][key]
-        require(saved.shape == tensor.shape and saved.dtype == tensor.dtype,
-                f"resume model tensor incompatible: {key}")
-    model.load_state_dict(state["model"], strict=True)
+    validate_model_state(model, state["model"])
     if config is not None:
-        require(old_config is not None, "legacy checkpoint lacks saved config; cannot verify resume compatibility")
+        require(isinstance(state.get("epoch"), int) and state["epoch"] >= 0,
+                "invalid completed epoch in checkpoint")
         require(config["train_params"]["epoches"] > state["epoch"], "total epochs must exceed completed epochs")
-    optimizer_changed = config is not None and old_config["optimizer"]["core_method"] != config["optimizer"]["core_method"]
-    scheduler_changed = config is not None and old_config["lr_scheduler"] != config["lr_scheduler"]
-    configured_groups = [{k: v for k, v in group.items() if k != "params"} for group in optimizer.param_groups]
+    model.load_state_dict(state["model"], strict=True)
+    unknown_settings = config is not None and old_config is None
+    optimizer_changed = config is not None and (unknown_settings or
+        old_config["optimizer"]["core_method"] != config["optimizer"]["core_method"] or
+        old_config["optimizer"].get("args", {}) != config["optimizer"].get("args", {}))
+    scheduler_changed = config is not None and (unknown_settings or
+        old_config["lr_scheduler"] != config["lr_scheduler"])
+    rate_changed = config is not None and (unknown_settings or
+        old_config["optimizer"]["lr"] != config["optimizer"]["lr"])
+    # These schedulers can retain progress with an explicitly rebased next-step
+    # rate. Others (e.g. warmup, OneCycle and Cyclic) derive rates/momentum from
+    # additional configured bounds, so a rate change restarts their new schedule.
+    rebase_supported = type(scheduler).__name__ in {
+        "StepLR", "MultiStepLR", "ExponentialLR", "CosineAnnealingLR", "ReduceLROnPlateau"}
+    restart_scheduler = optimizer_changed or scheduler_changed or (rate_changed and not rebase_supported)
+    configured_groups = [{k: copy.deepcopy(v) for k, v in group.items() if k != "params"}
+                         for group in optimizer.param_groups]
+    fresh_scheduler = copy.deepcopy(scheduler.state_dict())
+    policy = {}
     if not optimizer_changed:
         optimizer.load_state_dict(state["optimizer"])
-        if config is not None:
-            for group, configured in zip(optimizer.param_groups, configured_groups):
-                for key, value in configured.items():
-                    if key not in ("lr", "initial_lr"):
-                        group[key] = value
+        policy["optimizer"] = "restored compatible state and arguments"
     else:
-        print("Optimizer type changed: optimizer state reinitialized; model and RNG restored.")
-    if not optimizer_changed and not scheduler_changed:
+        # Arguments such as Adam.amsgrad or RMSprop.centered change state
+        # structure. Reusing their old moments can fail only on the next step.
+        optimizer.state.clear()
+        policy["optimizer"] = "reinitialized: type/arguments changed or old settings unavailable"
+    if not restart_scheduler:
         scheduler.load_state_dict(state["scheduler"])
+        policy["scheduler"] = "restored compatible progress"
+        if rate_changed:
+            lr = float(config["optimizer"]["lr"])
+            for group in optimizer.param_groups:
+                group["lr"] = lr
+                group["initial_lr"] = lr
+            scheduler.base_lrs = [lr] * len(optimizer.param_groups)
+            scheduler._last_lr = [lr] * len(optimizer.param_groups)
+            policy["learning_rate"] = "current YAML rate applied to next optimizer step"
+        else:
+            policy["learning_rate"] = "retained compatible scheduled rate"
     else:
-        # New scheduler configuration begins at the completed epoch, with
-        # configured LR as the next-step rate; old scheduler state is not mixed.
-        scheduler.last_epoch = state["epoch"]
-        scheduler._step_count = state["epoch"] + 1
-        print("Scheduler configuration changed: scheduler reinitialized at completed epoch.")
-    if config is not None and (optimizer_changed or scheduler_changed or
-                               config["optimizer"]["lr"] != old_config["optimizer"]["lr"]):
-        # Interpret the newly configured learning rate as the next-step rate.
-        # Rebase scheduler state too, so future scheduler steps retain it.
-        lr = float(config["optimizer"]["lr"])
-        for group in optimizer.param_groups:
-            group["lr"] = lr
-            group["initial_lr"] = lr
-        scheduler.base_lrs = [lr] * len(optimizer.param_groups)
-        scheduler._last_lr = [lr] * len(optimizer.param_groups)
-    restore_rng(state["rng"], generators)
+        # Preserve all fresh scheduler-derived group settings, including warmup
+        # LR and OneCycle/Cyclic bounds and momentum. A nominal optimizer LR
+        # must not replace a schedule's explicitly configured starting rate.
+        for group, configured in zip(optimizer.param_groups, configured_groups):
+            parameters = group["params"]
+            group.clear()
+            group.update(configured, params=parameters)
+        scheduler.load_state_dict(fresh_scheduler)
+        policy["scheduler"] = "reinitialized from current YAML; schedule restarts at initial step"
+        policy["learning_rate"] = "current YAML scheduler initialization determines effective rate"
+    if config is not None:
+        policy["configured_optimizer_lr"] = float(config["optimizer"]["lr"])
+    policy["effective_learning_rates"] = [float(group["lr"]) for group in optimizer.param_groups]
+    if config is None or (old_config is not None and old_config.get("seed") == config["seed"]):
+        restore_rng(state["rng"], generators)
+        policy["rng"] = "restored"
+    else:
+        seed_everything(config["seed"], config.get("reproducibility"))
+        for offset, (name, generator) in enumerate(generators.items()):
+            generator.manual_seed(config["seed"] + {"train": 0, "validate": 1}.get(name, offset))
+        policy["rng"] = "reseeded from current YAML: seed changed or old seed unavailable"
+    state["restore_policy"] = policy
+    print("Resume policy: " + "; ".join(f"{key}={value}" for key, value in policy.items()))
     return state

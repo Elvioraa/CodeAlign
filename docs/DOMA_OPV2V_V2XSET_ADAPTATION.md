@@ -2,7 +2,7 @@
 
 本次基线为 `75d5ecd359d36a64a3af3d64c4fe32e72ed344bc`。交付了可审查的独立训练链、数据接口、阶段权重校验、完整续训、联合推理和 AP 导出代码。本地没有真实数据和 CUDA/spconv，不能将这些结果描述成训练通过或双数据集 AP 已完成。
 
-**协议证据分级**：OPV2V 来自 DOMA 已保存的正式运行配置快照；V2XSet 来自用户指定的本地 V2 参考 YAML。服务器路径仅知 `/home/fkk/my_data/disk2/code/DOMA`，没有取得 V2XSet 最终实际运行配置、CLI 和锁文件。两套 `protocol_lock.yaml` 均明确将最终运行参数确认标记为 `SERVER_VALIDATION_REQUIRED`，当前值是有来源的候选值，不能当作已确认的服务器最终协议。代码适配可继续，正式对比前需用真实记录核验并同步修改锁文件与 final YAML。
+**协议证据分级**：OPV2V 来自 DOMA 已保存的正式运行配置快照；V2XSet 来自用户指定的本地 V2 参考 YAML。服务器路径仅知 `/home/fkk/my_data/disk2/code/DOMA`，没有取得 V2XSet 最终实际运行配置和 CLI。最终运行参数确认仍为 `SERVER_VALIDATION_REQUIRED`，当前值不能当作已确认的服务器最终协议。运行器只读取当前阶段 YAML；参考副本仅供人工审查，不参与运行门禁。正式对比前需用真实记录核验 final YAML。
 
 ## 1. 方法边界和原生实现审查
 
@@ -27,7 +27,7 @@
 
 这不是将原生 m1–m4 的名称直接复用。新 YAML 直接写入统一物理含义，训练 assignment 的槽位映射到单一源模态，最终 assignment 使用恒等映射。V2XSet 不设置 `lidar_channels_dict` 的条目，也不会生成 `_32.pcd` / `_16.pcd` 路径；该设计已由用户在 2026-10-27 明确确认，**不是阻塞项**。
 
-`CamEncode` 和 `CamEncode_Resnet101` 与 DOMA 对应类 AST 完全一致。需要如实说明：现有 LSS 的 Resnet101 实现只保留 trunk 的 conv1/layer1/layer2，layer3 为 Identity；保持了 DOMA 和 CodeAlign 的同一真实实现，不能声称运行完整的 ResNet101 分类干路。
+历史实现审查覆盖 `CamEncode` 和 `CamEncode_Resnet101`；运行时不比较参考源码。需要如实说明：现有 LSS 的 Resnet101 实现只保留 trunk 的 conv1/layer1/layer2，layer3 为 Identity；保持了 DOMA 和 CodeAlign 的同一真实实现，不能声称运行完整的 ResNet101 分类干路。
 
 | 模态 | 核心接口 | 本地训练 BEV（H×W） | 预处理 |
 |---|---|---|---|
@@ -36,7 +36,7 @@
 | m3 | XYZI 4 → MeanVFE → spconv → HeightCompression 128 → backbone 64 | 120×240 | voxel `[0.1,0.1,0.1]`，5 点/voxel，32000/70000 voxels |
 | m4 | LSS 128 → backbone 64 | 128×128 | 4 cameras，336×448，depth bins `[2,50,48]`，LID |
 
-各 encoder/backbone、camera augmentation、grid、depth 和 voxel 设置逐项复制对应 DOMA 配置，由 checker 比较。m3 的输入四维点特征在本仓库通过 MeanVFE 和 `num_point_features=4` 实现，没有另一个名为 PointFeatureEncoder 的阶段。新增 PCD 兼容读法保持 RGB-encoded intensity 的原有行为；对于只有 `x/y/z/intensity` 的合法 PCD 直接读取实际 intensity，不补假特征，也不猜测归一化。后者的实际数值尺度必须在服务器对照 DOMA 数据读取结果核验。
+各 encoder/backbone、camera augmentation、grid、depth 和 voxel 设置最初来自对应 DOMA 配置；checker 检查当前 YAML 的结构和接口，参考副本不强制约束当前配置。m3 的输入四维点特征在本仓库通过 MeanVFE 和 `num_point_features=4` 实现，没有另一个名为 PointFeatureEncoder 的阶段。新增 PCD 兼容读法保持 RGB-encoded intensity 的原有行为；对于只有 `x/y/z/intensity` 的合法 PCD 直接读取实际 intensity，不补假特征，也不猜测归一化。后者的实际数值尺度必须在服务器对照 DOMA 数据读取结果核验。
 
 两个数据集独立使用 `dataset/OPV2V/{train,validate,test}` 和 `dataset/V2XSET/{train,validate,test}`。OPV2V 还需要 `dataset/OPV2V_Hetero` 中同场景/车辆/帧的 32 线点云与 depth，以及原目录或 additional 目录中的 visibility 标签。它是 **OPV2V + OPV2V-H 扩展协议**，不能仅按目录名称宣称纯 OPV2V。不得用目录重命名替代数据身份审查。
 
@@ -61,7 +61,7 @@ V2XSet 使用原生 `V2XSETBaseDataset`，保留无深度标签、camera range �
 
 早期 DOMA V2 OPV2V YAML 是 square range；正式保存的 V2_R2 stage1 实际是 rectangular range。STAMP 的预算和旧文档不能覆盖这里的证据。历史 OPV2V infer.log 确认测试目录和四组 AP，但没有完整 CLI，故不能用它证明默认推理范围就是当时实际参数。
 
-assignment 与当前本地 DOMA 的两套 JSON 分别相同，训练/evaluation 场景数是 OPV2V 68/16、V2XSet 58/19。raw hash 与保持插入顺序的规范 hash 均在 lock 中。V2XSet 的 `-1` 是基础设施 CAV，不可直接判为占位符；它位于车辆后，真实有效性由数据目录/相机/标定/点云审计确认。不得从这些 JSON 数量推断数据集 split 的实际帧数。
+assignment 与当前本地 DOMA 的两套 JSON 分别相同，训练/evaluation 场景数是 OPV2V 68/16、V2XSet 58/19。运行时校验 assignment 的基本语义，保留场景与成员的插入顺序；恢复训练时按实际样本身份和成员记录检查连续性。V2XSet 的 `-1` 是基础设施 CAV，不可直接判为占位符；它位于车辆后，真实有效性由数据目录/相机/标定/点云审计确认。不得从这些 JSON 数量推断数据集 split 的实际帧数。
 
 ## 4. 独立配置及训练预算
 
@@ -70,13 +70,15 @@ assignment 与当前本地 DOMA 的两套 JSON 分别相同，训练/evaluation 
 - `opencood/hypes_yaml/opv2v/doma_protocol_codealign_v2/`
 - `opencood/hypes_yaml/v2xset/doma_protocol_codealign_v2/`
 
-每个根含 12 个可解析 `config.yaml`，以及 `protocol_lock.yaml` 和 `manifest.yaml`。所有命令读取 experiment root 中人工审查的实际 `config.yaml`；运行器不生成临时训练参数、不偷偷改 epoch/batch/LR，也不使用时间戳目录。
+每个根含 12 个可解析 `config.yaml` 和 `manifest.yaml`。所有命令读取 experiment root 中实际 `config.yaml`；`prepare` 只补齐缺失配置，不覆盖已编辑配置。各阶段目录保持稳定，每次启动和续训的实际配置与参数变更另外保存在独立 `run_history` 记录中。
 
-| 阶段 | 配置目录 | epoch / batch | Adam LR | 预算来源 |
+| 阶段 | Epoch 默认值 | OPV2V-H Batch Size（m1/m2/m3/m4） | V2XSet Batch Size | Adam LR 默认值 |
 |---|---|---|---|---|
-| 单模态 | `single/m1` … `single/m4` | 50 / 1 | 0.002 | 官方 `codebook/pyramid.yaml` |
-| 编码空间 | `code_space/m1` … `code_space/m4` | 50 / 1 | 0.002 | 官方 `codebook_pyramid_fixenc_aligner.yaml` |
-| FCF | `fcf/m2_to_m1` … `fcf/m4_to_m1` | 30 / 1 | 0.001 | 官方 `codebook_pyramid_c2c.yaml` |
+| `single` | 50 | 4 / 2 / 8 / 4 | 1 | 0.002 |
+| `code_space` | 50 | 8 / 4 / 8 / 4 | 1 | 0.002 |
+| `fcf`（m2/m3/m4→m1） | 30 | 2 / 2 / 2 | 1 | 0.001 |
+
+OPV2V-H 的 11 份训练模板仅调整 Batch Size，其他超参数不变。已有实验应编辑各阶段当前 YAML；本地没有对应实验配置，未提前创建实验目录。完整规则见 [配置与续训说明](CODEALIGN_CONFIG_AND_RESUME.md)。
 
 Codebook 用 64 channels、单 segment、16 entries、单 quantization level；与原生 16-code setting 一致。不同原生模板还出现 64-entry 配置，不能混载。scheduler、eval/save frequency 都在 YAML，不在 shell/runner 中写死。预算是 CodeAlign 原生方法预算，**没有宣称与 DOMA 的训练计算量相等**。
 
@@ -125,16 +127,16 @@ flowchart LR
 原生 `load_saved_model()` 会优先选择 bestval 并以 `strict=False` 装载；原 trainer 只存模型，没有完整 optimizer/scheduler/RNG。这些入口没有被改写，本协议使用独立严格路径。
 
 - `best.pth`：该阶段最小验证损失，供子阶段/最终装配选择；只保留一个确定名字，不靠 glob 排序猜测。
-- `latest.pth`：每个完成 epoch 的模型、optimizer、scheduler、Python/NumPy/PyTorch CPU/CUDA RNG、train/val generator、best 记录、config/lock/code/parent hash、样本集合 hash。**续训只从 latest 读**。
+- `latest.pth`：每个完成 epoch 的模型、optimizer、scheduler、Python/NumPy/PyTorch CPU/CUDA RNG、train/val generator、best 记录、当前配置、父 checkpoint 来源与样本身份。**续训只从 latest 读**。
 - `epoch_NNNN.pth`：YAML save_freq 指定的快照；不删除既有快照。
 - `complete.json`：训练完成及 best hash，父阶段未完成不能被消费。
-- `input_audit.json`：权重来源、可训练参数、样本数量、逻辑 GPU 与配置指纹。
+- `input_audit.json`：权重来源、可训练参数、样本数量和逻辑 GPU；每次启动的实际配置另外保存。
 
-装配逐 tensor 验证键、shape、dtype、所有者和 FCF 中冻结权重的逐值相等；缺键不回退随机初始化。父模型必须来自同一实验/数据集的已完成阶段，路径、config、code 和 lock hash 必须匹配。
+装配逐 tensor 验证键、shape、dtype、所有者和 FCF 中冻结权重的逐值相等；缺键不回退随机初始化。父模型必须来自同一数据集的已完成依赖阶段；记录和验证实际 checkpoint 文件完整性与依赖关系，不比较历史配置或源码版本。
 
-仅支持完成 epoch 边界续训；中断的当前 epoch 从上个 latest 重新执行。每个 epoch 的成员排序、worker、NumPy、Python 与 torch 流由 YAML seed 和 epoch 确定；`persistent_workers: false` 是重现约束。默认 seed=303，可在正式首轮运行前同步修改 YAML 的 seed 字段。改变已开跑配置后不能继续复用 checkpoint。
+仅支持完成 epoch 边界续训；中断的当前 epoch 从上个 latest 重新执行。每个 epoch 的成员排序、worker、NumPy、Python 与 torch 流由 YAML seed 和 epoch 确定；`persistent_workers: false` 是重现约束。默认 seed=303。Batch Size、总 Epoch、LR、Optimizer、Scheduler、num_workers、eval_freq、save_freq 和 seed 都可修改后续训；当前顶层 seed 生效。参数及恢复策略记录见 [配置与续训说明](CODEALIGN_CONFIG_AND_RESUME.md)。
 
-每阶段有自己的 `config.yaml`、`train.log`、checkpoint 和 `tensorboard/`；最终有 `assembly.json`、`assembly.log`，及 `CAVn/inference.log`。没有公共 run_logs，也不会在训练结束自动启动测试。所有日志由 Python runner 保存；额外 shell tee 不是必须。
+每阶段有自己的 `config.yaml`、`train.log` 和 checkpoint；新的 TensorBoard 输出位于各次启动独立的 `run_history/<run_id>/tensorboard/`，原 `tensorboard/` 目录保留；最终有 `assembly.json`、`assembly.log`，及 `CAVn/inference.log`。没有公共 run_logs，也不会在训练结束自动启动测试。所有日志由 Python runner 保存；额外 shell tee 不是必须。
 
 ## 7. 推理与 AP
 
@@ -146,18 +148,18 @@ flowchart LR
 
 AP 直接调用原生 `caluclate_tp_fp()` / `calculate_ap()`，不改数学定义；输出：
 
-- `final_infer/CAVn/result.json`：原始双精度 AP30/AP50/AP70、样本/GT/assignment/checkpoint/lock hash 与运行参数。
+- `final_infer/CAVn/result.json`：原始双精度 AP30/AP50/AP70、样本/GT/checkpoint 完整性证据、assignment 成员记录与运行参数。
 - `raw_statistics.json`：每阈值的原始 TP/FP/score/GT 数量。
 - `sample_ledger.json`：逐帧场景、timestamp、实际参与模态和 GT 数量。
 - `ap_summary.json` / `.csv`：四组结果，CSV 保留 8 位小数。
 
 汇总前强制比较四组的样本集合、GT 几何 hash、assignment、模型、范围和 prefix。如果不一致，拒绝汇总。结果目录按数据集和 CAV 隔离，拒绝覆盖已经完成的 AP 结果。
 
-与 DOMA 的 15 个关键代码符号 AST 比较有 14 个完全相同。`generate_gt_bbx` 只在 CodeAlign 多矩阵分支不同；本路径 `collate_batch_test` 提供的是 4×4 identity，因此执行相同公共分支。审计记录位于 `docs/protocol_sources/code_implementation_audit.json`。
+历史代码审查指出 `generate_gt_bbx` 的 CodeAlign 多矩阵分支存在差异；本路径 `collate_batch_test` 提供的是 4×4 identity，因此执行公共分支。运行工具不读取或校验参考源码快照。
 
 ## 8. 服务器命令模板（本地没有执行）
 
-在 Silas 的 CodeAlign checkout 内使用现有 HEAL/CodeAlign 环境。先人工核对 DOMA 实际 final YAML、CLI、GT 与数据记录，修正候选锁及 final YAML 后再准备实验目录。不要把这里的本地参考状态当作最终协议已批准。
+在 Silas 的 CodeAlign checkout 内使用现有 HEAL/CodeAlign 环境。先人工核对 DOMA 实际 final YAML、CLI、GT 与数据记录，按真实记录检查 final YAML 后再准备实验目录。不要把这里的本地参考状态当作最终协议已批准。
 
 ```bash
 # 必须自行填真实已存在路径；不假装已知服务器数据存放位置。
@@ -175,13 +177,14 @@ readlink -f dataset/OPV2V dataset/OPV2V_Hetero dataset/V2XSET
 
 python -B -m opencood.tools.check_codealign_doma
 python -B -m pytest -q tests/test_codealign_protocol.py -p no:cacheprovider
-python -B -m opencood.tools.check_codealign_doma --check-data --dataset opv2v
-python -B -m opencood.tools.check_codealign_doma --check-data --dataset v2xset
 
 export OPV2V_RUN=opencood/logs/CodeAlign_OPV2V_1GPU_SEED303
 export V2XSET_RUN=opencood/logs/CodeAlign_V2XSET_1GPU_SEED303
 python -B -m opencood.tools.run_codealign_doma prepare --dataset opv2v --experiment-root "$OPV2V_RUN"
 python -B -m opencood.tools.run_codealign_doma prepare --dataset v2xset --experiment-root "$V2XSET_RUN"
+# 检查实际实验 YAML；修改配置后应重新执行。
+python -B -m opencood.tools.check_codealign_doma --check-data --dataset opv2v --experiment-root "$OPV2V_RUN"
+python -B -m opencood.tools.check_codealign_doma --check-data --dataset v2xset --experiment-root "$V2XSET_RUN"
 
 # 只打印所有阶段命令，不启动任何进程。
 bash scripts/codealign_doma_commands.sh opv2v "$OPV2V_RUN"
@@ -221,8 +224,8 @@ python -B -m opencood.tools.run_codealign_doma summarize --experiment-root "$RUN
 
 沿用 CodeAlign/HEAL 的现成 Python/PyTorch/CUDA 环境与 requirements，不做依赖升级。新增完整状态读取兼容带/不带 `weights_only` 参数的 PyTorch。需要 spconv（v1 或兼容 v2/cumm）、torchvision、efficientnet_pytorch、timm、torch_scatter、pypcd、open3d、tensorboardX 等既有依赖。根据环境编译 torch_scatter 和 `opencood/pcdet_utils` 的 IoU/NMS CUDA 扩展；LSS 使用原生 QuickCumsum autograd，不把 CPU 检查当成 CUDA 数值对齐。EfficientNet-B0 缓存需预先准备；不声称已有检测预训练 checkpoint。
 
-本地环境是 Python 3.12.4、torch 2.7.0+cpu；缺少 spconv、torch_scatter、timm、icecream、tensorboardX，且没有 dataset。已通过 24 阶段 YAML、协议/依赖/来源/assignment 检查、原生 Codebook CPU 前后向及 FCF 梯度测试、完整状态续训契约、Python 编译与 diff whitespace 检查。具体证据见第二份协议检查文档和 JSON。
+2026-10-27 的本地记录为 Python 3.12.4、torch 2.7.0+cpu，缺少 spconv、torch_scatter、timm、icecream、tensorboardX 和 dataset。当时通过阶段 YAML、依赖与 assignment 静态检查、原生 Codebook CPU 前后向、FCF 梯度测试和完整状态续训契约。历史结果见第二份检查文档；本次结果以实际 CPU 测试输出和交付报告为准。
 
-待服务器验证：完整 DataLoader/相机和点云读入、真实训练/反向、原生算子、实际显存、完整阶段装配、四组同样本 GT 与 AP。最终大范围 SECOND + Camera/LSS + dense Codebook 可占大量显存，默认 batch=1 也不构成显存保证；先做 shape smoke 和测峰值。workers/prefetch/pin_memory 由 YAML 控制；模型结构和正式样本协议不因资源优化而改变。
+待服务器验证：完整 DataLoader/相机和点云读入、真实训练/反向、原生算子、实际显存、完整阶段装配、四组同样本 GT 与 AP。最终大范围 SECOND + Camera/LSS + dense Codebook 可占大量显存，配置的 Batch Size 不构成显存保证；先做 shape smoke 和测峰值。workers/prefetch/pin_memory 由 YAML 控制；模型结构和正式样本协议不因资源优化而改变。
 
-不连接服务器、不启动 screen/tmux、不自动训练/推理、不 commit、不 push。本次所有源码与产物写入均位于 CodeAlign；DOMA/HEAL/STAMP 只读。
+2026-11-06 更新只涉及 Windows 本地代码、配置、CPU 测试及功能分支提交推送，不连接服务器、不启动 GPU 训练。DOMA/HEAL/STAMP 未修改。
